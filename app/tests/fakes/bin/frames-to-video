@@ -1,0 +1,9 @@
+#!/bin/bash
+# Fake frames-to-video: writes an empty "video" and the real helper's summary line.
+python3 -c 'import json,sys; print("frames-to-video\t"+json.dumps(sys.argv[1:]))' "$@" >> "$MC_FAKE_DIR/calls.log"
+[ $# -eq 2 ] || { echo "usage: frames-to-video <frames-dir> <out.mp4>" >&2; exit 1; }
+n=$(find "$1" -name 'frame-*.jpg' 2>/dev/null | wc -l | tr -d ' ')
+[ "$n" -ge 2 ] || { echo "$1: $n frame(s), no video" >&2; exit 1; }
+[ -f "$MC_FAKE_DIR/video-fail" ] && { echo "fake encoder failure" >&2; exit 1; }
+: > "$2" || { echo "cannot write $2" >&2; exit 1; }     # the real helper fails the same way
+echo "$2: $n frames, 0.1 min, 0.0 MB"

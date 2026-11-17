@@ -1,0 +1,7 @@
+#!/bin/bash
+# Fake claude for the bats tests: records its arguments in $FAKE_LOG; "auth status" says signed in.
+printf 'claude %s\n' "$*" >> "${FAKE_LOG:?FAKE_LOG must point at the fake-command log}"
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  printf '{"loggedIn": true}\n'
+fi
+exit 0

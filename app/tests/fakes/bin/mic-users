@@ -1,0 +1,6 @@
+#!/bin/bash
+# Fake mic-users: prints $MC_FAKE_DIR/mic-users.txt (lines of "<pid>\t<bundle id>"), nothing when absent.
+printf 'mic-users\t[]\n' >> "$MC_FAKE_DIR/calls.log"
+[ -f "$MC_FAKE_DIR/mic-users-fail" ] && exit 1      # a helper that did not answer (timed out on a busy Mac)
+[ -f "$MC_FAKE_DIR/mic-users.txt" ] && cat "$MC_FAKE_DIR/mic-users.txt"
+exit 0

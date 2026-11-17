@@ -1,0 +1,6 @@
+#!/bin/bash
+# Fake osascript: the engine passes notifications as `-e <script> <title> <text> <sound>` and the viewer
+# command as `-e <script> <command>`. Everything after the script goes to $MC_FAKE_DIR/notifications.log.
+shift 2 2>/dev/null   # -e <script>
+python3 -c 'import json,sys; print(json.dumps(sys.argv[1:], ensure_ascii=False))' "$@" >> "$MC_FAKE_DIR/notifications.log"
+exit 0

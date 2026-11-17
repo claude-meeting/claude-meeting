@@ -1,0 +1,60 @@
+name: test
+
+# Started by hand only. The project's checks run with scripts/ci.sh: `make test-pr` on a Mac, `make test-ci` in a
+# macOS 15 virtual machine set up from nothing. This job runs the same suite on a GitHub-hosted macOS runner.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Apple Silicon runner: the engine's packages (MLX) only exist for arm64 macOS.
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # build.sh and the version checks want the full history
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            app/requirements.txt
+            app/requirements-dev.txt
+
+      - name: Python environment
+        run: |
+          uv python install 3.14
+          uv venv --python 3.14 app/asr-venv
+          uv pip install --python app/asr-venv/bin/python -r app/requirements.txt -r app/requirements-dev.txt
+
+      - name: Script and media tools
+        run: brew install bats-core shellcheck ffmpeg
+
+      - name: Build the helpers
+        run: |
+          mkdir -p app/bin/MeetingCopilotScreen.app/Contents/MacOS
+          swiftc -O -target arm64-apple-macos15.0 app/src/mic-users.swift -o app/bin/mic-users
+          swiftc -O -target arm64-apple-macos15.0 app/src/frames-to-video.swift -o app/bin/frames-to-video
+          # screen-ocr uses the macOS 26 Vision API; the runner's SDK may be older (the tests then skip it).
+          swiftc -O -target arm64-apple-macos15.0 app/src/screen-ocr.swift -o app/bin/screen-ocr \
+            || echo "screen-ocr not built: needs the macOS 26 SDK"
+          swiftc -O -target arm64-apple-macos15.0 app/src/screen-capture.swift \
+            -o app/bin/MeetingCopilotScreen.app/Contents/MacOS/screen-capture
+
+      - name: Tests
+        run: scripts/test.sh
+
+      - name: Coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            app/coverage.xml
+            app/.coverage-html
+          if-no-files-found: ignore

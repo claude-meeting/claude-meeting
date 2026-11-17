@@ -1,0 +1,3 @@
+# Test tooling, installed into app/asr-venv by scripts/test.sh:
+#   uv pip install --python app/asr-venv/bin/python -r app/requirements-dev.txt
+coverage>=7.6

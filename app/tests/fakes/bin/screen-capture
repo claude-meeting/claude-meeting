@@ -1,0 +1,9 @@
+#!/bin/bash
+# Fake screen-capture helper: only the permission query is answered; real captures never run in tests
+# (frames are placed into the capture folder by the test itself).
+python3 -c 'import json,sys; print("screen-capture\t"+json.dumps(sys.argv[1:]))' "$@" >> "$MC_FAKE_DIR/calls.log"
+if [ "$1" = "--access-status" ]; then
+  if [ -f "$MC_FAKE_DIR/screen-denied" ]; then echo denied > "$2"; else echo granted > "$2"; fi
+  exit 0
+fi
+exit 0

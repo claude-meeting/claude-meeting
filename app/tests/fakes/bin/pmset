@@ -1,0 +1,7 @@
+#!/bin/bash
+# Fake pmset: `pmset -g assertions` lists Chrome's WebRTC assertion while $MC_FAKE_DIR/browser-call exists.
+printf 'pmset\t[%s]\n' "$*" >> "$MC_FAKE_DIR/calls.log"
+echo "Listed by owning process:"
+[ -f "$MC_FAKE_DIR/browser-call" ] && \
+  echo '   pid 30898(Google Chrome): [0x0001] 00:03:02 NoIdleSleepAssertion named: "WebRTC has active PeerConnections"'
+exit 0

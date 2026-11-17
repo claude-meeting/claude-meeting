@@ -1,0 +1,11 @@
+{
+ "schema_version": 1,
+ "active": true,
+ "finals": [
+  {"line": 1, "ts": "2026-01-15T10:00:03", "text": "大家好，我們開始今天的排程功能進度會議。", "speaker": null},
+  {"line": 2, "ts": "2026-01-15T10:00:12", "text": "排程 API 已經完成，剩下通知的部分還在測試。", "speaker": null},
+  {"line": 3, "ts": "2026-01-15T10:00:18", "text": "好", "speaker": null},
+  {"line": 4, "ts": "2026-01-15T10:00:30", "text": "Alex 你覺得下週二上線來得及嗎？", "speaker": null}
+ ],
+ "transcript_status": {"active": true, "session_id": "0123456789abcdef0123456789abcdef", "line_count": 4}
+}

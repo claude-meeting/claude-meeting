@@ -1,0 +1,29 @@
+#!/bin/bash
+# Fake curl for the bats tests: records its arguments in $FAKE_LOG and never uses the network.
+#   .../api.github.com/...      prints a release JSON with an _aarch64.dmg download link
+#   .../claude.ai/install.sh    prints an "installer" that only creates $HOME/.local/bin/claude
+#   anything else with -o FILE  writes a placeholder into FILE
+printf 'curl %s\n' "$*" >> "${FAKE_LOG:?FAKE_LOG must point at the fake-command log}"
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="${2:-}"; shift 2 ;;
+    -H) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+case "$url" in
+  *api.github.com*)
+    printf '{"tag_name": "v9.9.9", "browser_download_url": "https://example.invalid/Minutes_9.9.9_aarch64.dmg"}\n' ;;
+  *claude.ai/install.sh*)
+    cat <<'INSTALLER'
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/sh\necho fake claude\n' > "$HOME/.local/bin/claude"
+chmod +x "$HOME/.local/bin/claude"
+INSTALLER
+    ;;
+  *)
+    [ -z "$out" ] || printf 'fake download\n' > "$out" ;;
+esac
+exit 0

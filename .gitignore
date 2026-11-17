@@ -1,0 +1,35 @@
+# Python environments and caches
+app/asr-venv/
+__pycache__/
+*.pyc
+
+# Runtime state, logs, scratch
+app/state/
+app/work/
+*.log
+
+# Compiled helpers (built from app/src/) and the marker the Mac app's engine copy carries
+app/bin/mic-users
+app/bin/screen-ocr
+app/bin/frames-to-video
+app/bin/screen-capture
+app/bin/MeetingCopilotScreen.app/
+app/bin/.prebuilt
+/bin/
+
+# macOS
+.DS_Store
+
+# Downloaded / converted models
+app/models/
+
+# Mac app build output
+app/macos/build/
+app/macos/.build/
+
+# test artefacts
+app/.ci-reports/
+app/.coverage
+app/.coverage.*
+app/coverage.xml
+app/.coverage-html/

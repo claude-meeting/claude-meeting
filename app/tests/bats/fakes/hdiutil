@@ -1,0 +1,5 @@
+#!/bin/bash
+# Fake hdiutil for the bats tests: records its arguments in $FAKE_LOG, mounts nothing and prints
+# nothing (so install.sh sees no mount point).
+printf 'hdiutil %s\n' "$*" >> "${FAKE_LOG:?FAKE_LOG must point at the fake-command log}"
+exit 0

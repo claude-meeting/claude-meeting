@@ -1,0 +1,19 @@
+#!/bin/bash
+# Fake security for the bats tests: records its arguments in $FAKE_LOG and never touches a keychain.
+#   list-keychains -d user        prints the file named by $FAKE_KEYCHAINS (nothing when unset)
+#   list-keychains -d user -s ... prints nothing (only logged)
+#   find-identity ...             prints $FAKE_IDENTITY (nothing when unset)
+#   unlock-keychain ...           fails when $FAKE_UNLOCK_FAIL is set
+printf 'security %s\n' "$*" >> "${FAKE_LOG:?FAKE_LOG must point at the fake-command log}"
+case "${1:-}" in
+  list-keychains)
+    case " $* " in
+      *" -s "*) ;;
+      *) [ -z "${FAKE_KEYCHAINS:-}" ] || cat "$FAKE_KEYCHAINS" ;;
+    esac ;;
+  find-identity)
+    [ -z "${FAKE_IDENTITY:-}" ] || printf '%s\n' "$FAKE_IDENTITY" ;;
+  unlock-keychain)
+    [ -z "${FAKE_UNLOCK_FAIL:-}" ] || exit 1 ;;              # the keychain no longer opens with its password
+esac
+exit 0

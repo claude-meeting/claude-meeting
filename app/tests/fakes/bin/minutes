@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Fake Minutes CLI for tests. State lives in $MC_FAKE_DIR/minutes.json:
+  {"recording": bool, "processing": bool, "session_id": str, "finals": [...], "fail": ["record"|"stop"|"status"],
+   "status_hang": bool}
+`record` also creates ~/.minutes/current.{voice,system}.wav (44-byte header plus a little PCM), like Minutes.
+Every call is appended to $MC_FAKE_DIR/calls.log as "minutes<TAB><json args>"."""
+import json
+import os
+import struct
+import sys
+import time
+from pathlib import Path
+
+FAKE = Path(os.environ["MC_FAKE_DIR"])
+STATE = FAKE / "minutes.json"
+args = sys.argv[1:]
+with open(FAKE / "calls.log", "a") as f:
+    f.write("minutes\t" + json.dumps(args, ensure_ascii=False) + "\n")
+
+
+def load():
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save(st):
+    STATE.write_text(json.dumps(st, ensure_ascii=False))
+
+
+st = load()
+fail = st.get("fail") or []
+cmd = args[0] if args else ""
+
+if cmd == "status":
+    if st.get("status_hang"):
+        time.sleep(30)
+    if "status" in fail:
+        print("minutes: busy", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({"recording": bool(st.get("recording")), "processing": bool(st.get("processing")),
+                      "processing_stage": None, "recording_mode": "call" if st.get("recording") else None,
+                      "pid": 4242 if st.get("recording") else None}))
+elif cmd == "record":
+    if "record" in fail:
+        print("minutes: audio device busy", file=sys.stderr)
+        sys.exit(1)
+    st["recording"] = True
+    st.setdefault("session_id", "fake-session-1")
+    stems = Path.home() / ".minutes"
+    stems.mkdir(parents=True, exist_ok=True)
+    header = (b"RIFF" + struct.pack("<I", 0) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16)
+              + b"data" + struct.pack("<I", 0))
+    for stem in ("voice", "system"):
+        p = stems / f"current.{stem}.wav"
+        if not p.exists() or st.get("new_stems", True):
+            p.unlink(missing_ok=True)          # a new file, as Minutes makes for each recording
+            p.write_bytes(header + b"\0" * 3200)
+    (stems / "current.wav").write_bytes(header)
+    save(st)
+    print("Started recording")
+elif cmd == "stop":
+    if "stop" in fail:
+        print("minutes: nothing to stop", file=sys.stderr)
+        sys.exit(1)
+    st["recording"] = False
+    st["processing"] = bool(st.get("process_after_stop", True))
+    save(st)
+    print("Stopped")
+elif cmd == "transcript":
+    print(json.dumps({"schema_version": 1, "active": bool(st.get("recording")), "finals": st.get("finals") or [],
+                      "transcript_status": {"active": bool(st.get("recording")), "session_id": st.get("session_id"),
+                                            "line_count": len(st.get("finals") or [])}}, ensure_ascii=False))
+elif cmd == "devices":
+    print("Input devices:")
+    print("  Built-in Microphone (48000Hz, 1 ch)")
+    print("  USB Mic [Pro] (48000Hz, 2 ch)")
+    print(json.dumps(["Built-in Microphone (48000Hz, 1 ch)", "USB Mic [Pro] (48000Hz, 2 ch)"], indent=1))
+elif cmd == "setup":
+    print("ok")
+else:
+    print(json.dumps({"ok": True, "args": args}))

@@ -1,0 +1,4 @@
+#!/bin/bash
+# Fake xattr for the bats tests: records its arguments in $FAKE_LOG and changes no attribute.
+printf 'xattr %s\n' "$*" >> "${FAKE_LOG:?FAKE_LOG must point at the fake-command log}"
+exit 0

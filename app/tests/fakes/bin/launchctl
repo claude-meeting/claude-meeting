@@ -1,0 +1,23 @@
+#!/bin/bash
+# Fake launchctl: records the call; `print` says the job runs unless $MC_FAKE_DIR/launchctl-stopped exists or
+# the job was booted out (and not bootstrapped again since). $MC_FAKE_DIR/bootstrap-fails holds how many of
+# the next bootstraps fail, like launchd refusing a job it has not let go of yet.
+python3 -c 'import json,sys; print("launchctl\t"+json.dumps(sys.argv[1:]))' "$@" >> "$MC_FAKE_DIR/calls.log"
+case "$1" in
+  print)
+    label="${2##*/}"
+    if [ -f "$MC_FAKE_DIR/launchctl-stopped" ] || [ -f "$MC_FAKE_DIR/bootedout-$label" ]; then
+      echo "Could not find service" >&2; exit 113
+    fi
+    printf '\tstate = running\n\tpid = 4242\n'; exit 0 ;;
+  bootout)
+    touch "$MC_FAKE_DIR/bootedout-${2##*/}"; exit 0 ;;
+  bootstrap)
+    fails="$(cat "$MC_FAKE_DIR/bootstrap-fails" 2>/dev/null || echo 0)"
+    if [ "$fails" -gt 0 ]; then
+      echo $((fails - 1)) > "$MC_FAKE_DIR/bootstrap-fails"
+      echo "Bootstrap failed: 5: Input/output error" >&2; exit 5
+    fi
+    rm -f "$MC_FAKE_DIR"/bootedout-*; exit 0 ;;
+  *) exit 0 ;;
+esac

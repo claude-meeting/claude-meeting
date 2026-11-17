@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Fake Claude Code CLI for tests. Understands the four ways the engine calls it:
+  claude auth status                                   -> {"loggedIn": true}  ($MC_FAKE_DIR/claude-signed-out = false)
+  claude -p ... --input-format stream-json ...         -> the periodic analysis: one "result" event whose
+                                                          result is $MC_FAKE_DIR/tick-result.json (or a default);
+                                                          reading who is speaking in a frame: $MC_FAKE_DIR/speaking.json
+  claude -p ... --include-partial-messages ... -- P    -> the instant answer: text_delta events for
+                                                          "<kind>\\n<question>\\n<answer>" ($MC_FAKE_DIR/urgent-kind)
+  claude -p ... --allowedTools WebSearch ... -- P      -> the web verification: "OK"
+  claude -p ... -- P                                   -> the batch question check: "1 Q"
+Every prompt goes to $MC_FAKE_DIR/claude.log (one JSON line per call) so tests can inspect it."""
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+FAKE = Path(os.environ["MC_FAKE_DIR"])
+args = sys.argv[1:]
+stdin = sys.stdin.read() if "--input-format" in args else ""
+prompt = args[args.index("--") + 1] if "--" in args else ""
+if stdin:
+    try:
+        content = json.loads(stdin.splitlines()[0])["message"]["content"]
+        prompt = "\n".join(c.get("text", "") for c in content if c.get("type") == "text")
+        images = sum(1 for c in content if c.get("type") == "image")
+    except (ValueError, KeyError, IndexError):
+        images = 0
+else:
+    images = 0
+with open(FAKE / "claude.log", "a") as f:
+    f.write(json.dumps({"args": args, "prompt": prompt, "images": images}, ensure_ascii=False) + "\n")
+
+if (FAKE / "claude-delay").exists():
+    time.sleep(float((FAKE / "claude-delay").read_text() or 0))
+
+if args[:2] == ["auth", "status"]:
+    print(json.dumps({"loggedIn": not (FAKE / "claude-signed-out").exists()}))
+    sys.exit(0)
+
+if (FAKE / "claude-fail").exists():
+    print("fake claude: failing on request", file=sys.stderr)
+    sys.exit(1)
+
+if "--input-format" in args and "Meeting apps mark the participant" in prompt:   # who is speaking in a frame
+    try:
+        result = json.loads((FAKE / "speaking.json").read_text())
+    except (OSError, ValueError):
+        result = {"layout": "no_meeting_visible", "speaking": None, "confidence": "low"}
+    print(json.dumps({"type": "result", "is_error": False, "result": json.dumps(result, ensure_ascii=False)},
+                     ensure_ascii=False))
+    sys.exit(0)
+
+if "--input-format" in args:                      # periodic analysis (autopilot.ask_model)
+    try:
+        result = json.loads((FAKE / "tick-result.json").read_text())
+    except (OSError, ValueError):
+        result = {"summary": "討論排程功能的上線時程。", "items": [
+            {"type": "my_todo", "text": "Alex 明天前把排程規格寄給大家"},
+            {"type": "decision", "text": "排程功能下週二上線"}],
+            "answers": []}
+    print(json.dumps({"type": "system", "subtype": "init"}))
+    print(json.dumps({"type": "result", "is_error": False, "result": json.dumps(result, ensure_ascii=False)},
+                     ensure_ascii=False))
+    sys.exit(0)
+
+if "--include-partial-messages" in args:          # instant answer (realtime.UrgentExplainer)
+    kind = (FAKE / "urgent-kind").read_text().strip() if (FAKE / "urgent-kind").exists() else "問題"
+    question = prompt.rsplit("\n", 1)[-1][:60] or "這個問題"
+    addressee = ((FAKE / "urgent-addressee").read_text().strip() if (FAKE / "urgent-addressee").exists()
+                 else "Alex" if kind == "問我" else "大家")
+    text = f"對象：{addressee}，在提問\n{kind}\n{question}\n這是假的回答第一句。\n- 重點一\n- 重點二\n"
+    for chunk in text.split("\n"):
+        event = {"type": "stream_event", "event": {"type": "content_block_delta",
+                                                   "delta": {"type": "text_delta", "text": chunk + "\n"}}}
+        print(json.dumps(event, ensure_ascii=False), flush=True)
+        time.sleep(0.01)
+    print(json.dumps({"type": "result", "is_error": False, "result": text}, ensure_ascii=False))
+    sys.exit(0)
+
+if "--allowedTools" in args:                       # web verification
+    print((FAKE / "verify-reply").read_text() if (FAKE / "verify-reply").exists() else "OK")
+    sys.exit(0)
+
+# batch question check: which numbered lines are questions
+reply = (FAKE / "window-reply").read_text() if (FAKE / "window-reply").exists() else "1 Q"
+print(reply)

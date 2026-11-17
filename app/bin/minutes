@@ -1,0 +1,62 @@
+#!/bin/bash
+# Wrapper for the Minutes CLI.
+# `record` and `live` are started through launchd so macOS attributes audio
+# capture to Minutes.app (stable path, permanent TCC grant) instead of to the
+# calling process (e.g. a versioned Claude Code binary whose grant breaks on
+# every update). Everything else runs the real binary directly.
+APP_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"   # resolve /opt/homebrew/bin/minutes symlink
+PYTHON="$APP_DIR/asr-venv/bin/python"
+STATE="$APP_DIR/state"
+REAL="${MINUTES_APP:-/Applications/Minutes.app}/Contents/MacOS/minutes"
+LABEL=com.meeting-copilot.capture
+
+case "$1" in
+  record|live)
+    for a in "$@"; do
+      case "$a" in -h|--help|--diagnose) exec "$REAL" "$@" ;; esac
+    done
+    mkdir -p "$STATE"
+    plist="$STATE/$LABEL.plist"
+    # A recording gets a config of its own: a lighter pass after it stops, as our transcript replaces Minutes'
+    # (lib/minutes_record.py). Without one Minutes uses the user's config as it is.
+    recording_config=""
+    if [ "$1" = record ] && "$PYTHON" "$APP_DIR/tools/setup_minutes.py" --recording-config \
+         "$STATE/minutes-recording.toml" >/dev/null 2>&1; then
+      recording_config="$STATE/minutes-recording.toml"
+    fi
+    "$PYTHON" - "$plist" "$LABEL" "$REAL" "$STATE" "$recording_config" "$@" <<'PY'
+import plistlib, sys, os
+plist, label, real, state, recording_config, *args = sys.argv[1:]
+env = {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
+if recording_config:
+    env["MINUTES_CONFIG_PATH"] = recording_config
+plistlib.dump({
+    "Label": label,
+    "ProgramArguments": [real, *args],
+    "RunAtLoad": True,
+    "KeepAlive": False,
+    "StandardOutPath": os.path.join(state, "capture.out"),
+    "StandardErrorPath": os.path.join(state, "capture.err"),
+    "EnvironmentVariables": env,
+}, open(plist, "wb"))
+PY
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
+    : > "$STATE/capture.err"
+    launchctl bootstrap "gui/$(id -u)" "$plist" || exit 1
+    # Wait until the recording is actually running (or the job died).
+    for _ in $(seq 1 30); do
+      sleep 0.5
+      if "$REAL" status 2>/dev/null | grep -qE '"recording": true|"live_active": true|"active": true'; then
+        echo "Started '$1' via Minutes.app (launchd job $LABEL)."
+        exit 0
+      fi
+      launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | grep -q "state = running" || break
+    done
+    echo "Failed to start '$1'. Last output:" >&2
+    tail -5 "$STATE/capture.err" >&2
+    exit 1
+    ;;
+  *)
+    exec "$REAL" "$@"
+    ;;
+esac

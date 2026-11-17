@@ -1,0 +1,3 @@
+#!/bin/bash
+# Fake pgrep: no live-notes viewer is ever running.
+exit 1

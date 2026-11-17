@@ -1,0 +1,115 @@
+# meeting-copilot configuration: the defaults, with every key explained.
+# Your own settings live in ~/.config/meeting-copilot/config.toml (the installer creates it with your
+# name; the Mac app's Settings window edits it). Every key is optional; anything left out keeps the
+# default shown here. Environment variables, for scripts: MEETING_COPILOT_CONFIG (another config
+# file), MEETING_COPILOT_KNOWN_TERMS (another known-terms list; the engine and copilot-known both read
+# it), MINUTES_APP (the Minutes app for the `minutes` wrapper; the service sets it from [paths]).
+
+[user]
+name = ""                 # your name as others say it in meetings, e.g. "Alex"
+aliases = []              # other ways people address you, e.g. ["alex", "艾力克斯"]
+language = ""             # language of the meeting, notes and answers: "zh-TW" (Traditional Chinese), "zh-CN"
+                          # (Simplified Chinese), "en"; empty = macOS language
+
+[autopilot]
+auto_record = true        # start recording when another app uses the microphone
+start_after_secs = 6      # mic must be in use this long before recording starts
+stop_after_secs = 30      # mic must be free this long before recording stops
+cooldown_secs = 20
+call_audio_lost_secs = 120  # the call's audio recorded as silence this long, with nothing transcribed: restart
+call_audio_restarts = 1     # restarts per call; after that only a notification (0: never restart)
+ignore_apps = []          # extra bundle-id prefixes that never count as a call
+
+[llm]                     # which model writes the notes and the answers
+provider = "claude"       # "claude": your own Claude subscription, through Claude Code (signed in with your account)
+                          # "openai": any service that speaks the OpenAI chat format: DeepSeek, Qwen, OpenAI,
+                          #           Claude's API, a model on this Mac (Ollama, LM Studio)... Which model, and how
+                          #           well it does, is yours to choose. The transcript and screen text of your
+                          #           meetings then go to that service.
+# The keys below are read only with provider = "openai":
+base_url = ""             # the service's address, up to /v1: "https://api.deepseek.com/v1", "http://localhost:11434/v1"
+model = ""                # the model's name there; it writes the notes and the answers
+fast_model = ""           # optional: a faster, cheaper model that checks new lines for questions every few seconds
+vision = false            # true when the model reads images: screen frames are sent, speakers are read from them
+api_key_file = "~/.config/meeting-copilot/api_key"   # one line holding the service's key (none for a model on
+                          # this Mac); or set the MEETING_COPILOT_API_KEY environment variable
+                          # Not there with "openai": the online check of an answer (web_verify, further down).
+
+[copilot]
+enabled = true
+model = "claude-sonnet-5-5"           # with provider = "claude": the model that writes the notes
+tick_secs = 15            # periodic analysis: to-dos, decisions, deadlines, risks, general explanations
+context_minutes = 10      # transcript window sent as context
+open_viewer = true        # open (or bring to front) the live-notes window when a meeting starts
+show_transcript = true    # stream every transcribed line into the live notes (1-2 s after it is spoken)
+instant_triggers = ["name", "question", "every_line"]
+                          # instant answers: "name" = you are named (first), "question" = looks like a
+                          # question (next), "every_line" = every few seconds the fast model checks the
+                          # other new lines together, so questions without a question word are found too
+
+[explain]                 # instant answers to questions (urgent) and to questions addressed to you
+enabled = true
+model = "claude-haiku-5-5"          # (the three models here are read with provider = "claude" above)
+                                    # fast model: every few seconds it checks the new lines for questions
+answer_model = "claude-sonnet-5-5"  # writes the answer, which streams into the notes; it also decides whether the
+                                    # line is asked of you, which the fast model got wrong more often
+verify_model = "claude-sonnet-5-5"  # background fact-check with web search
+web_verify = true         # append a correction / addition only when the check finds one
+detail = "medium"         # answer length: "short" (one sentence), "medium" (two or three), "long"; or your own words
+max_per_minute = 4        # cap on meeting questions answered per minute (questions to you are never capped)
+known_terms_file = "~/.config/meeting-copilot/known_terms.txt"   # one term per line: never explained
+
+[notify]                  # which macOS notifications to show
+types = ["heard_name", "explain", "mention", "my_todo", "question_to_me",
+         "decision", "deadline", "risk", "other_todo"]
+min_gap_secs = 0          # minimum seconds between two notifications
+sounds = { heard_name = "Ping", mention = "Ping", question_to_me = "Ping", my_todo = "Ping" }
+
+[audio]
+mic_device = ""           # microphone to record from: the name `minutes devices` prints, without
+                          # its "(48000Hz, 1 ch)" part;
+                          # empty = follow the macOS default input. Pinning avoids switching to
+                          # a Bluetooth headset that connects mid-meeting.
+
+[screen]                  # full-resolution capture of what is shown in the meeting
+enabled = true
+interval_secs = 1         # one frame per second; unchanged frames are not saved
+target = "all"            # "all" displays, "main" display only ("display" means the same), or "app:<bundle-id>"
+send_images = true        # send every changed frame to Claude as an image with each analysis
+max_images_per_tick = 20  # newest frames kept when more changed than this in one analysis
+video = true              # after the meeting, turn the frames into a review video (not sent to Claude)
+name_speakers = true      # name the call's voices after the tile the meeting app marks as speaking
+speaker_model = "claude-sonnet-5-5"   # reads those frames, only while a voice has no name yet
+
+[voice]                   # voices: is a microphone segment really you, and who among the others is talking
+verify = true             # needs your voiceprint (the setup guide records it; or tools/enroll_voiceprint.py)
+voiceprint_file = "~/.config/meeting-copilot/voiceprint.json"
+threshold = 0.4           # cosine similarity; your own voice typically scores about 0.45-0.85, other voices 0.2 or less
+people_file = "~/.config/meeting-copilot/people.json"   # voiceprints of named participants (copilot-name, the app)
+group_threshold = 0.5     # how alike two lines of the call must sound to be one person (higher: more, purer groups)
+
+[asr]
+self_min_rms = 0          # 0 = learn the user's mic level per meeting; or a fixed RMS threshold
+live = true               # per-speaker live transcription; falls back to Minutes' transcript on failure
+primary_model = "auto"    # "auto" = by language (Chinese: TEA-ASR-1.1, English: Qwen3-ASR-1.7B); or a model id / local path
+fallback_model = "auto"   # "auto" = by language (Chinese: Qwen3-ASR-1.7B, English: Parakeet TDT v2)
+corrections_file = "~/.config/meeting-copilot/asr_corrections.txt"   # "heard => meant" per line, e.g. pie torch => PyTorch
+
+[paths]
+meetings_dir = "~/meetings"
+minutes_app = "/Applications/Minutes.app"
+claude_cli = ""           # empty = auto-detect `claude` (you sign in with your own account)
+
+[privacy]
+consent_reminder = false  # true: a notification at each recording start reminds you to tell the participants
+store_voiceprints = true  # keep voiceprints of the other participants: per meeting (for naming them)
+                          # and, once named, across meetings. false = only your own voiceprint. The app's
+                          # Settings applies this to Minutes too; from a terminal re-run install.sh.
+
+[retention]               # days; 0 = keep forever
+transcripts_days = 365
+audio_days = 30
+voiceprints_days = 0      # voiceprints are small (KB per meeting); set days to expire them
+screenshots_days = 30
+video_days = 14
+live_notes_days = 30

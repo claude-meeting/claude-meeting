@@ -1,0 +1,51 @@
+#!/bin/bash
+# Name a speaker of the current (or latest) meeting, e.g. after the notes show "其他人 B".
+# The name is used in the live notes from then on, and the speaker's voiceprint is remembered
+# so the same person is recognised in later meetings ([privacy] store_voiceprints).
+#
+# Usage: copilot-name                 list this meeting's speakers and their names
+#        copilot-name --json          the same as JSON (for the Mac app)
+#        copilot-name B 毛毛蟲           name speaker B
+APP_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+exec "$APP_DIR/asr-venv/bin/python" - "$APP_DIR" "$@" <<'PY'
+import json, sys
+from pathlib import Path
+app, args = Path(sys.argv[1]), sys.argv[2:]
+sys.path.insert(0, str(app / "lib"))
+import config, speakers
+cfg = config.load()
+live = sorted((config.state_dir() / "live").glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+if not live:
+    sys.exit("no meeting transcript yet")
+transcript = live[-1]
+people = speakers.People(cfg.get("voice", {}).get("people_file") or "~/.config/meeting-copilot/people.json")
+store = cfg.get("privacy", {}).get("store_voiceprints", True)
+try:
+    snap = json.loads(speakers.speakers_path(transcript).read_text())
+except (OSError, ValueError):
+    snap = {}
+if args == ["--json"]:
+    names = speakers.resolve_names(transcript, people if store else None)
+    print(json.dumps({"meeting": transcript.stem, "speakers": [
+        {"who": who, "name": names.get(who, ""), "lines": entry["count"]} for who, entry in sorted(snap.items())]},
+        ensure_ascii=False))
+    sys.exit(0)
+if not args:
+    names = speakers.resolve_names(transcript, people if store else None)
+    print(f"{transcript.stem}:")
+    for who, entry in sorted(snap.items()):
+        print(f"  {who}: {names.get(who, '(unnamed)')}  ({entry['count']} lines)")
+    sys.exit(0)
+if len(args) < 2 or args[0] not in snap:
+    sys.exit(f"usage: copilot-name <speaker> <name>; speakers so far: {', '.join(sorted(snap)) or 'none'}")
+who, name = args[0], " ".join(args[1:]).strip()      # names may contain spaces
+path = speakers.names_path(transcript)
+try:
+    given = json.loads(path.read_text())
+except (OSError, ValueError):
+    given = {}
+given[who] = name
+speakers.atomic_write(path, json.dumps(given, ensure_ascii=False))
+learned = store and people.learn(name, snap[who]["vector"], snap[who]["count"])
+print(f"{who} = {name}" + ("; voiceprint saved for later meetings" if learned else ""))
+PY

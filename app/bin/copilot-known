@@ -1,0 +1,26 @@
+#!/bin/bash
+# Mark terms as known so the meeting copilot never explains them.
+# Usage: copilot-known <term> [more terms...]    (no arguments: list known terms)
+# The list lives in [explain] known_terms_file (default ~/.config/meeting-copilot/known_terms.txt);
+# MEETING_COPILOT_KNOWN_TERMS overrides it, MEETING_COPILOT_CONFIG picks the config, as for the engine.
+APP_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+exec "$APP_DIR/asr-venv/bin/python" - "$APP_DIR" "$@" <<'PY'
+import sys
+from pathlib import Path
+app, terms = Path(sys.argv[1]), sys.argv[2:]
+sys.path.insert(0, str(app / "lib"))
+import config
+path = config.known_terms_file(config.load())
+path.parent.mkdir(parents=True, exist_ok=True)
+path.touch()
+known = [l.strip() for l in path.read_text().splitlines() if l.strip()]
+if not terms:
+    print("\n".join(known))
+    sys.exit(0)
+with open(path, "a") as f:
+    for term in terms:
+        if term not in known:
+            f.write(term + "\n")
+            known.append(term)
+        print(f"known: {term}")
+PY

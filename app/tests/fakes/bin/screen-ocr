@@ -1,0 +1,8 @@
+#!/bin/bash
+# Fake screen-ocr: the "text" of a frame is its file name, so tests can tell which frames were read.
+[ -n "$1" ] || { echo "usage: screen-ocr <image>" >&2; exit 2; }
+[ -f "$1" ] || exit 2
+printf 'screen-ocr\t["%s"]\n' "$1" >> "$MC_FAKE_DIR/calls.log"
+echo "OCR $(basename "$1")"
+echo "第二行 $(basename "$1")"
+exit 0

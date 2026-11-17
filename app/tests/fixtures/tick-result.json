@@ -1,0 +1,13 @@
+{
+ "summary": "確認排程功能下週二上線；通知改用 WebSocket 推送。",
+ "items": [
+  {"type": "my_todo", "text": "Alex 明天把排程規格寄給大家"},
+  {"type": "decision", "text": "排程功能下週二上線"},
+  {"type": "risk", "text": "測試環境不穩可能影響上線"},
+  {"type": "other_todo", "text": "確認測試環境", "owner": "B"},
+  {"type": "question_to_me", "text": "下週二上線來得及嗎"}
+ ],
+ "answers": [
+  {"question": "什麼是 WebSocket", "answer": "WebSocket 是瀏覽器與伺服器之間的雙向長連線。\n- 由 HTTP 升級而來\n- 適合即時推送"}
+ ]
+}

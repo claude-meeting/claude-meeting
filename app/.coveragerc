@@ -1,0 +1,19 @@
+# coverage.py settings; COVERAGE_PROCESS_START points here so child processes (autopilot.py,
+# live_transcriber.py, the tools) report into the same data set.
+[run]
+parallel = true
+source = lib
+        bin
+        tools
+omit = tests/*
+       bin/copilot-*
+       bin/minutes
+data_file = .coverage
+
+[report]
+show_missing = false
+skip_empty = true
+precision = 1
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:

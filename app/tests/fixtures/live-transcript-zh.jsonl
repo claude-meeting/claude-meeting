@@ -1,0 +1,9 @@
+{"ts": "2026-01-15T10:00:03", "start": 1.2, "end": 4.8, "speaker": "其他人", "text": "大家好，我們開始今天的排程功能進度會議。", "engine": "primary", "who": "A"}
+{"ts": "2026-01-15T10:00:07", "start": 5.1, "end": 8.0, "speaker": "我", "text": "好，我這邊先報告後端的部分。", "engine": "primary"}
+{"ts": "2026-01-15T10:00:12", "start": 9.0, "end": 14.5, "speaker": "我", "text": "排程 API 已經完成，剩下通知的部分還在測試。", "engine": "primary"}
+{"ts": "2026-01-15T10:00:18", "start": 15.2, "end": 19.9, "speaker": "其他人", "text": "通知是用 WebSocket 推送嗎？什麼是 WebSocket？", "engine": "primary", "who": "B"}
+{"ts": "2026-01-15T10:00:24", "start": 21.0, "end": 24.4, "speaker": "我", "text": "對，前端會收到即時更新。", "engine": "primary"}
+{"ts": "2026-01-15T10:00:30", "start": 26.3, "end": 30.1, "speaker": "其他人", "text": "Alex 你覺得下週二上線來得及嗎？", "engine": "primary", "who": "A"}
+{"ts": "2026-01-15T10:00:36", "start": 31.5, "end": 35.0, "speaker": "我", "text": "來得及，我明天把規格寄給大家。", "engine": "primary"}
+{"ts": "2026-01-15T10:00:41", "start": 36.2, "end": 39.7, "speaker": "其他人", "text": "那就決定下週二上線，風險是測試環境還不穩。", "engine": "primary", "who": "B"}
+{"ts": "2026-01-15T10:00:47", "start": 41.0, "end": 43.9, "speaker": "其他人", "text": "好，今天就到這裡，謝謝大家。", "engine": "primary", "who": "A"}
