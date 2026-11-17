@@ -15,8 +15,8 @@ for d in bin lib src tools; do
 done
 cp -p "$SRC/app/config.example.toml" "$SRC/app/requirements.txt" "$DEST/app/"
 cp -p "$SRC/install.sh" "$SRC/uninstall.sh" "$SRC/sync-engine.sh" "$DEST/"
-# The bundled uv is read-only (Homebrew installs it 0555) and cp -p keeps that, so the copy from the
-# last sync can't be overwritten: remove it first.
+# The bundled uv of an older app is read-only (0555, as Homebrew installs it) and cp -p keeps that, so the
+# copy from the last sync can't be overwritten: remove it first.
 rm -f "$DEST/bin/uv"
 cp -p "$SRC/bin/uv" "$DEST/bin/uv"
 # Files copied out of a downloaded app carry the quarantine flag; the helpers would be refused.

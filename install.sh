@@ -81,7 +81,7 @@ if [ ! -x "$MINUTES_APP/Contents/MacOS/minutes" ] && [ "$GET_MINUTES" = 1 ]; the
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT                  # whatever fails below, the download does not stay behind
   rel="$(curl -fsSL -H 'User-Agent: meeting-copilot' https://api.github.com/repos/silverstein/minutes/releases/latest)"
-  url="$(printf '%s' "$rel" | grep -oE 'https://[^"]+_aarch64\.dmg' | head -1 || true)"   # pipefail: grep may find nothing
+  url="$(printf '%s' "$rel" | grep -oE 'https://[^"]+_aarch64\.dmg' | sed -n 1p || true)"   # pipefail: grep may find nothing
   [ -n "$url" ] || die "could not find the Minutes download; get it from https://github.com/silverstein/minutes/releases"
   curl -fsSL -o "$tmp/minutes.dmg" "$url"
   mnt="$(hdiutil attach -nobrowse -readonly "$tmp/minutes.dmg" 2>/dev/null | awk -F'\t' '/\/Volumes\//{print $NF}' | tail -1)"
@@ -324,7 +324,7 @@ if grep -Eq '^provider *= *"openai"' "$CONFIG" 2>/dev/null; then
   echo "  ok: another model service is chosen ([llm] in the config); Claude Code is not needed"
 elif [ ! -x "$claude_bin" ]; then
   warn "Claude Code is not installed: https://claude.com/claude-code — then run  claude auth login"
-elif auth="$("$claude_bin" auth status 2>/dev/null || true)" && printf '%s' "$auth" | grep -Eq '"loggedIn": ?true'; then
+elif auth="$("$claude_bin" auth status 2>/dev/null || true)" && grep -Eq '"loggedIn": ?true' <<< "$auth"; then
   echo "  ok: signed in (notes and explanations use your own account)"
 else
   warn "not signed in: run  claude auth login  with your own Claude account"

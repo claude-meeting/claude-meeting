@@ -64,7 +64,7 @@ setup() {
 }
 
 @test "sync-engine: a second sync replaces a read-only uv" {
-  chmod 0555 "$SRC/bin/uv"                        # as build.sh bundles it from Homebrew
+  chmod 0555 "$SRC/bin/uv"                        # as older apps bundled it
   run bash "$SRC/sync-engine.sh" "$DEST" 1.2.3
   [ "$status" -eq 0 ]
   chmod u+w "$SRC/bin/uv"

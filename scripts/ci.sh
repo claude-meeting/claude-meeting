@@ -70,7 +70,7 @@ trap cleanup EXIT
 
 run_local() {
   echo "macos=$(sw_vers -productVersion) $(uname -m)" > "$ENV_FILE"
-  echo "swift=$(swift --version 2>/dev/null | head -1)" >> "$ENV_FILE"
+  echo "swift=$(swift --version 2>/dev/null | sed -n 1p)" >> "$ENV_FILE"
   scripts/test.sh
 }
 
@@ -114,7 +114,7 @@ run_vm() {
     && swiftc -O -target arm64-apple-macos15.0 app/src/screen-capture.swift -o app/bin/MeetingCopilotScreen.app/Contents/MacOS/screen-capture"
   {
     echo "macos=$(vm sw_vers -productVersion) $(vm uname -m) (virtual machine, set up from nothing)"
-    echo "swift=$(vm 'swift --version 2>/dev/null | head -1') (this Mac's Xcode)"
+    echo "swift=$(vm 'swift --version 2>/dev/null | sed -n 1p') (this Mac's Xcode)"
     echo "image=$image"
   } > "$ENV_FILE"
   printf '\n===== tests =====\n'

@@ -25,7 +25,7 @@ for arg in "$@"; do
     *) DMG="$arg" ;;
   esac
 done
-DMG="${DMG:-$(ls -t "$ROOT"/app/macos/build/claude-meeting-*.dmg 2>/dev/null | head -1)}"
+DMG="${DMG:-$(ls -t "$ROOT"/app/macos/build/claude-meeting-*.dmg 2>/dev/null | sed -n 1p)}"
 [ -f "$DMG" ] || { echo "no .dmg: build one with app/macos/build.sh --dmg or pass its path" >&2; exit 1; }
 command -v tart >/dev/null || { echo "tart is not installed: brew install cirruslabs/cli/tart" >&2; exit 1; }
 command -v sshpass >/dev/null || { echo "sshpass is not installed: brew install hudochenkov/sshpass/sshpass" >&2; exit 1; }

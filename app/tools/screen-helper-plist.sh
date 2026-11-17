@@ -45,7 +45,8 @@ current() { [ -f "$PLIST" ] && [ "$(plutil -convert json -o - "$PLIST" 2>/dev/nu
 # The capture job, as the engine checks it (ScreenCap.LABEL, ScreenCap.running): by its launchd label, not by a
 # process path. A bats test keeps this label equal to the engine's.
 LABEL="com.meeting-copilot.screen"
-running() { launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | grep -q "state = running"; }
+# Whole output first: under pipefail, `launchctl print | grep -q` fails when grep stops early and launchctl gets SIGPIPE.
+running() { grep -q "state = running" <<< "$(launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null)"; }
 designated() { codesign -dr - "$HELPER" 2>&1 | grep designated; }
 
 register() { "$LSREGISTER" -f "$HELPER" >/dev/null 2>&1 || true; }   # System Settings shows the name it has

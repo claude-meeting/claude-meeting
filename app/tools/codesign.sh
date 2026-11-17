@@ -18,7 +18,7 @@ NAME="${MEETING_COPILOT_SIGNING_NAME:-meeting-copilot local signing}"   # a rele
 # file and holds the certificate), so a caller can avoid a re-sign that would reset Screen Recording.
 if [ "${1:-}" = --has-identity ]; then
   [ -f "$KC" ] && [ -f "$PWFILE" ] && security unlock-keychain -p "$(cat "$PWFILE")" "$KC" 2>/dev/null \
-    && security find-identity -p codesigning "$KC" 2>/dev/null | grep -qF "\"$NAME\""
+    && grep -qF "\"$NAME\"" <<< "$(security find-identity -p codesigning "$KC" 2>/dev/null)"
   exit $?
 fi
 OPENSSL=/usr/bin/openssl     # LibreSSL: writes PKCS#12 files the macOS keychain can import
@@ -73,7 +73,8 @@ unlock() { security unlock-keychain -p "$(cat "$PWFILE")" "$KC" 2>/dev/null; }
 if ! unlock; then
   create_identity && unlock || { rmdir "$LOCK" 2>/dev/null; adhoc "$@"; exit 0; }
 fi
-hash="$(security find-identity -p codesigning "$KC" | awk -v n="\"$NAME\"" 'index($0, n) {print $2; exit}')"
+ids="$(security find-identity -p codesigning "$KC")"   # whole output first: awk exits early (pipefail)
+hash="$(awk -v n="\"$NAME\"" 'index($0, n) {print $2; exit}' <<< "$ids")"
 [ -n "$hash" ] || { rmdir "$LOCK" 2>/dev/null; echo "  ! signing certificate not found in $KC"; adhoc "$@"; exit 0; }
 
 # Put our keychain on the search list just for codesign, and always restore the list.

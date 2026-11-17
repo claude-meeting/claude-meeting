@@ -9,7 +9,7 @@ app = d["app"]
 background = d["background"]
 width, height = int(d["width"]), int(d["height"])
 
-format = "UDZO"
+format = "UDRW"   # build.sh takes the marks off this writable image, then compresses it
 files = [app]
 symlinks = {"Applications": "/Applications"}
 icon_locations = {

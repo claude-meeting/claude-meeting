@@ -5,6 +5,8 @@
 #   app/macos/build.sh --install   ... and copy it to ~/Applications
 #   app/macos/build.sh --dmg       ... and make build/claude-meeting-<version>.dmg to hand out
 set -euo pipefail
+# Under pipefail, `cmd | grep -q` fails when grep stops reading at its first match and cmd then dies of SIGPIPE: read a
+# command's whole output first ("$(cmd)"), then test it.
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$HERE/.." && pwd)"
@@ -102,10 +104,13 @@ done
 # Prebuilt helpers must run on macOS 15 (the app's minimum) and carry the stable signature.
 for bin in "$APP_DIR/bin/mic-users" "$APP_DIR/bin/frames-to-video" "$APP_DIR/bin/screen-ocr" \
            "$APP_DIR/bin/MeetingCopilotScreen.app/Contents/MacOS/screen-capture"; do
-  vtool -show-build "$bin" 2>/dev/null | grep -q 'minos 15' || { echo "$(basename "$bin") needs macOS > 15: rebuild with install.sh" >&2; exit 1; }
+  minos="$(sed -n 's/^ *minos //p' <<< "$(vtool -show-build "$bin" 2>/dev/null)" | sort -u)"
+  [ "$minos" = "15.0" ] || { echo "$(basename "$bin") must target macOS 15.0 (it says: ${minos:-nothing}): rebuild with install.sh" >&2; exit 1; }
 done
+# Signed with a certificate (an Authority line): not ad-hoc, not unsigned.
+cert_signed() { local out; out="$(codesign -dvv "$1" 2>&1)" || return 1; grep -q '^Authority=' <<< "$out"; }
 for bin in "$APP_DIR/bin/mic-users" "$APP_DIR/bin/screen-ocr" "$APP_DIR/bin/frames-to-video" "$APP_DIR/bin/MeetingCopilotScreen.app"; do
-  codesign -dv "$bin" 2>&1 | grep -q 'Signature=adhoc' && { echo "$(basename "$bin") is ad-hoc signed: run install.sh" >&2; exit 1; }
+  cert_signed "$bin" || { echo "$(basename "$bin") is not signed with the local certificate: run install.sh" >&2; exit 1; }
 done
 ENGINE="$BUNDLE/Contents/Resources/engine"
 mkdir -p "$ENGINE/app" "$ENGINE/bin"
@@ -113,7 +118,11 @@ cp -p "$APP_DIR/../install.sh" "$APP_DIR/../uninstall.sh" "$HERE/sync-engine.sh"
 rsync -a --exclude '__pycache__' --exclude '.DS_Store' "$APP_DIR/bin" "$APP_DIR/lib" "$APP_DIR/src" "$APP_DIR/tools" "$ENGINE/app/"
 cp -p "$APP_DIR/config.example.toml" "$APP_DIR/requirements.txt" "$ENGINE/app/"
 touch "$ENGINE/app/bin/.prebuilt"          # install.sh: use these signed helpers, never rebuild them
-cp "$(readlink -f "$(command -v uv)")" "$ENGINE/bin/uv"
+# A byte copy, not cp: cp clones uv together with the com.apple.provenance it has here, and that mark cannot be
+# taken off the clone. A file written anew only gets the marks of the process writing it, which the image step below
+# removes; xattr can only do that on a file its owner may write, so uv is 0755 rather than Homebrew's 0555.
+cat "$(readlink -f "$(command -v uv)")" > "$ENGINE/bin/uv"
+chmod 0755 "$ENGINE/bin/uv"
 # License texts of what the app carries: this project's, the notices, and uv's own (Apache-2.0 or MIT), kept in
 # app/macos/third-party/uv so the build does not depend on how uv was installed.
 LICENSES="$BUNDLE/Contents/Resources/licenses"
@@ -129,13 +138,14 @@ fi
 cp "$ICON" "$BUNDLE/Contents/Resources/AppIcon.icns"
 
 "$APP_DIR/tools/codesign.sh" "$BUNDLE"
-if codesign -dv "$BUNDLE" 2>&1 | grep -q 'Signature=adhoc'; then
-  echo "the app is ad-hoc signed (no local certificate): permissions would not survive updates" >&2; exit 1
+if ! cert_signed "$BUNDLE"; then
+  echo "the app is not signed with the local certificate (ad-hoc or unsigned): permissions would not survive updates" >&2
+  exit 1
 fi
 if [ -n "${RELEASE_SIGNER:-}" ]; then
   for item in "$BUNDLE" "$ENGINE/app/bin/mic-users" "$ENGINE/app/bin/screen-ocr" "$ENGINE/app/bin/frames-to-video" \
               "$ENGINE/app/bin/MeetingCopilotScreen.app"; do
-    codesign -dvv "$item" 2>&1 | grep -q -x -F "Authority=$RELEASE_SIGNER" \
+    grep -q -x -F "Authority=$RELEASE_SIGNER" <<< "$(codesign -dvv "$item" 2>&1)" \
       || { echo "${item#"$BUNDLE/"} is not signed by \"$RELEASE_SIGNER\": run install.sh --no-service with it" >&2; exit 1; }
   done
 fi
@@ -161,6 +171,23 @@ echo "built $BUNDLE"
 
 if [ "${1:-}" = "--dmg" ]; then
   DMG="$HERE/build/claude-meeting-${VERSION#v}.dmg"
+  RW="$HERE/build/dmg-rw.dmg"                 # dmgbuild's writable image, compressed into $DMG below
+  # Detach a mounted image: up to five tries, never forced (a volume taken away while in use may lose writes).
+  detach() {
+    local i
+    for i in 1 2 3 4 5; do
+      hdiutil detach -quiet "$1" && { rmdir "$1" 2>/dev/null || true; return 0; }
+      [ "$i" = 5 ] || sleep 2
+    done
+    echo "could not detach $1 (still in use?)" >&2; return 1
+  }
+  # Images of an earlier run that was killed may still be attached: detach them before their files are replaced.
+  for mnt in $(hdiutil info -plist | plutil -convert json -o - - | /usr/bin/python3 -c 'import json, sys
+for i in json.load(sys.stdin).get("images", []):
+    if i.get("image-path") in sys.argv[1:]:
+        print(*[e["mount-point"] for e in i.get("system-entities", []) if e.get("mount-point")])' "$RW" "$DMG"); do
+    detach "$mnt" || exit 1
+  done
   rm -f "$DMG"
   # The window opens laid out: a background with an arrow, the app on the left, Applications on the right.
   # dmgbuild writes Finder's layout file itself, so no Finder (and no Automation permission) is needed. It runs
@@ -184,6 +211,7 @@ if [ "${1:-}" = "--dmg" ]; then
   # The image gets a copy of the app without extended attributes: com.apple.provenance carries an id from this
   # Mac's policy database, com.apple.quarantine one of a download.
   STAGE="$HERE/build/dmg-stage"
+  rm -f "$RW"
   rm -rf "$STAGE" && mkdir -p "$STAGE"
   ditto --noextattr --noqtn "$BUNDLE" "$STAGE/$(basename "$BUNDLE")"
   xattr -cr "$STAGE" 2>/dev/null || true
@@ -191,8 +219,24 @@ if [ "${1:-}" = "--dmg" ]; then
   TZ=UTC LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 "$DMGENV/bin/dmgbuild" -s "$HERE/dmg-settings.py" \
     -D app="$STAGE/$(basename "$BUNDLE")" -D background="$BG/background.png" \
     -D width="${GEOMETRY[0]}" -D height="${GEOMETRY[1]}" -D app_x="${GEOMETRY[2]}" -D apps_x="${GEOMETRY[3]}" \
-    -D icons_y="${GEOMETRY[4]}" "claude-meeting" "$DMG" >/dev/null || { echo "dmgbuild failed" >&2; exit 1; }
+    -D icons_y="${GEOMETRY[4]}" "claude-meeting" "$RW" >/dev/null || { echo "dmgbuild failed" >&2; exit 1; }
   rm -rf "$STAGE"
+  # dmgbuild runs on a Python that macOS may track (one uv installed from a shell macOS tracks): every file it writes
+  # into the image then carries com.apple.provenance. It writes a writable image (dmg-settings.py); the marks come off
+  # there, then it is compressed once. Only a process macOS does not track can remove them: Terminal.app, running
+  # this script from a clone made there. Whatever the volume gained while mounted (.fseventsd) is removed too.
+  MNT="$(mktemp -d)"
+  hdiutil attach -nobrowse -noverify -quiet -mountpoint "$MNT" "$RW" || { echo "cannot open $RW" >&2; exit 1; }
+  # Whatever stops the script from here on: the image is detached, then removed (kept if it cannot be detached).
+  trap 'detach "$MNT" && rm -f "$RW"' EXIT
+  for mark in com.apple.provenance com.apple.quarantine; do
+    xattr -r -s -d "$mark" "$MNT" 2>/dev/null || true                 # -s: the Applications link, not its target
+  done
+  rm -rf "$MNT/.fseventsd" "$MNT/.Spotlight-V100" "$MNT/.Trashes"
+  trap - EXIT
+  detach "$MNT" || { echo "the image is not made: $RW stays attached at $MNT" >&2; exit 1; }
+  hdiutil convert -quiet -format UDZO -imagekey zlib-level=9 -o "$DMG" "$RW" || { echo "could not compress $RW" >&2; exit 1; }
+  rm -f "$RW"
   # hdiutil names the partitions in the Mac's language ("disk image（Apple_HFS：4）" on a Chinese Mac) and reads no
   # locale variable for it. Write the names an English Mac writes, "disk image (Apple_HFS : 4)": they sit in the
   # image's XML resources, which no checksum covers.
@@ -219,17 +263,20 @@ PY
   # dmgbuild does not check its copy of the app: the app inside must be whole and correctly signed.
   MNT="$(mktemp -d)"
   hdiutil attach -nobrowse -readonly -quiet -mountpoint "$MNT" "$DMG" || { echo "cannot open $DMG" >&2; exit 1; }
+  trap 'detach "$MNT"' EXIT
   ok=0; codesign --verify --deep --strict "$MNT/claude-meeting.app" 2>/dev/null || ok=$?
   # A shell started from an app macOS tracks (one downloaded from the web) gives every file it writes that app's
-  # com.apple.provenance, and xattr cannot take it off: such an image is refused. -s reads the Applications link
-  # itself: without it xattr reports the attributes of this Mac's /Applications folder.
+  # com.apple.provenance, and from such a shell xattr cannot take it off: such an image is refused. -s reads the
+  # Applications link itself: without it xattr reports the attributes of this Mac's /Applications folder.
   MARKS="$(xattr -rs "$MNT" 2>/dev/null | grep -c -E ': com\.apple\.(provenance|quarantine)$' || true)"
-  hdiutil detach -quiet "$MNT"; rmdir "$MNT"
+  trap - EXIT
+  detach "$MNT" || exit 1
   [ $ok -eq 0 ] || { rm -f "$DMG"; echo "the app in the disk image is incomplete or its signature is broken" >&2; exit 1; }
   if [ "$MARKS" != 0 ] && [ "${MC_DMG_KEEP_PROVENANCE:-}" != 1 ]; then
     rm -f "$DMG"
     echo "the disk image carries com.apple.provenance or com.apple.quarantine ($MARKS times): run build.sh --dmg from" \
-         "a shell whose new files have none (touch one, then xattr it), or set MC_DMG_KEEP_PROVENANCE=1 to keep them" >&2
+         "Terminal.app in a clone made there (a script that carries the mark, such as one cloned from a tracked shell," \
+         "marks everything it runs), or set MC_DMG_KEEP_PROVENANCE=1 to keep them" >&2
     exit 1
   fi
   echo "disk image $DMG ($(du -h "$DMG" | cut -f1)): version $SHORT, build $BUILD, engine $ENGINE_VERSION"
