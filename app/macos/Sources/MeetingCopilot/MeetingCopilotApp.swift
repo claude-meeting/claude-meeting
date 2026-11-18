@@ -244,6 +244,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // First launch, nothing installed yet, or a newer engine in this app: start with the setup guide.
         if CommandLine.arguments.contains("--show-setup") || !engine.installed || engine.engineOutdated
             || !UserDefaults.standard.bool(forKey: "setupShown") { showSetup() }
+        DispatchQueue.main.async { [weak self] in self?.removeOldCopies() }
+    }
+
+    /// Copies of the app an update left behind (OldCopies): moved to the Trash (not deleted: they can be put back),
+    /// taken out of Launch Services so notifications stop using their name and icon, and the user is told.
+    private func removeOldCopies() {
+        guard let id = Bundle.main.bundleIdentifier else { return }
+        let fm = FileManager.default
+        let version = { (url: URL) in Bundle(url: url)?.infoDictionary?["CFBundleShortVersionString"] as? String }
+        var urls = NSWorkspace.shared.urlsForApplications(withBundleIdentifier: id)
+        for dir in ["/Applications", fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications").path] {
+            let old = URL(fileURLWithPath: dir).appendingPathComponent(OldCopies.oldName)
+            if Bundle(url: old)?.bundleIdentifier == id { urls.append(old) }      // another app of that name stays
+        }
+        let old = OldCopies.toRemove(found: urls.map { (path: $0.path, version: version($0)) },
+                                     ownPath: Bundle.main.bundlePath, ownVersion: version(Bundle.main.bundleURL))
+        guard !old.isEmpty else { return }
+        NSWorkspace.shared.recycle(old.map { URL(fileURLWithPath: $0) }) { [weak self] moved, error in
+            let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+            for url in moved.values {
+                let unregister = Process()
+                unregister.executableURL = URL(fileURLWithPath: lsregister)
+                unregister.arguments = ["-u", url.path]
+                try? unregister.run()
+                unregister.waitUntilExit()
+            }
+            let movedPaths = moved.keys.map(\.path).sorted()
+            DispatchQueue.main.async {
+                if !movedPaths.isEmpty {
+                    self?.notifier.show(AppNotification(title: L.t("old_copies_moved"),
+                                                        text: movedPaths.joined(separator: "\n"), sound: "", open: ""))
+                }
+                guard let error else { return }
+                let failed = NSAlert()
+                failed.messageText = L.t("old_copies_failed")
+                failed.informativeText = error.localizedDescription + "\n\n"
+                    + old.filter { !movedPaths.contains($0) }.joined(separator: "\n")
+                failed.runModal()
+            }
+        }
     }
 
     func showNotes() { showNotes(engine.currentNotes) }
@@ -274,7 +314,7 @@ struct MenuIcon: View {
     @ObservedObject var engine: Engine
 
     var body: some View {
-        if !engine.reachable || !engine.status.problems.isEmpty {
+        if !engine.reachable || !engine.status.problems.isEmpty || engine.outdated {
             Image(systemName: "exclamationmark.triangle")
         } else if engine.status.recording {
             Image(systemName: "record.circle.fill").symbolRenderingMode(.palette).foregroundStyle(.red)
@@ -301,6 +341,13 @@ struct MenuContent: View {
             ForEach(s.problems, id: \.self) { p in
                 Label(p, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            if engine.outdated {
+                // The background program still runs the engine of an older app until it is updated.
+                Button { openSetup() } label: {
+                    Label(L.t("engine_outdated"), systemImage: "arrow.down.circle.fill")
+                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
             }
             Divider()
             Button(L.t("open_notes"), systemImage: "note.text") { openNotes() }

@@ -71,7 +71,7 @@ trap cleanup EXIT
 run_local() {
   echo "macos=$(sw_vers -productVersion) $(uname -m)" > "$ENV_FILE"
   echo "swift=$(swift --version 2>/dev/null | sed -n 1p)" >> "$ENV_FILE"
-  scripts/test.sh
+  scripts/test.sh --contracts          # this Mac has the real Minutes and launchd: check the fakes against them
 }
 
 run_vm() {

@@ -15,7 +15,8 @@ set -uo pipefail
 HELPER="${1:?usage: screen-helper-plist.sh <helper.app> write|refresh|check|running|register}"
 MODE="${2:-refresh}"
 TOOLS="$(cd "$(dirname "$0")" && pwd)"
-NAME="claude-meeting Screen"            # how Screen & System Audio Recording lists it
+NAME="claude-meeting Screen"            # its name (Screen & System Audio Recording may list the folder's,
+                                        # MeetingCopilotScreen, instead)
 PLIST="$HELPER/Contents/Info.plist"
 LSREGISTER="${LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
 

@@ -53,7 +53,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         source = s
     }
 
-    private func show(_ n: AppNotification) {
+    func show(_ n: AppNotification) {
         let content = UNMutableNotificationContent()
         content.title = n.title
         content.body = n.text

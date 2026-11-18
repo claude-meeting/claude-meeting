@@ -90,4 +90,9 @@ branch, the commit gets a status and its pull request a comment, all as the acco
 with two speakers: `MC_LIVE_MEETING=~/meetings/<name> make test-live` (the recording's path without its
 extension; `MC_LIVE_START=mm:ss` picks a point where both talk). It runs a replay of that recording
 (`app/tests/simulate_live.py`), the transcriber resume test and a fresh-HOME install from the built app.
+`make test-contracts` checks what the fakes assume against the real Minutes and launchd of your Mac
+(`app/tests/contracts.py`: the output Minutes gives, the job states it uses, how launchd answers a restart). A fake
+written from what a tool was expected to do lets the code and its tests be wrong together; `make test-pr` and
+`make test-live` run these too. `make test-vm` also plays a user who used Minutes before, on another of its models,
+installs the service twice in a row, and has an older copy of the app under its old name in Applications.
 `scripts/test.sh --only unit|integration|e2e|swift|bats` runs one group; `make coverage` opens the HTML report.

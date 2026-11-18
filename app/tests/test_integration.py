@@ -105,6 +105,19 @@ class AppCommands(unittest.TestCase):
         self.assertFalse(self.sb.status()["recording"])
         self.assertEqual([a[0] for n, a in self.sb.calls("minutes") if a[0] in ("record", "stop")], ["record", "stop"])
 
+    def test_a_meeting_that_ends_with_no_meeting_file_is_reported(self):
+        # What the user expects at the end, checked at the end: before, the wait for the file just gave up, and
+        # meetings with no record went unnoticed for days (claude-meeting/claude-meeting#1).
+        outcomes = self.ap.RECORD_OUTCOMES
+        outcomes.WAIT_SECS, outcomes.MIN_SECS, outcomes.CHECK_SECS = 20, 5, 0
+        self.sb.minutes(process_after_stop=False)                       # Minutes is done at once
+        self.sb.command("start")
+        self.clock.at(10, lambda: self.sb.command("stop"))
+        self.sb.run_main(self.ap, loops=45, clock=self.clock)
+        missing = [n for n in self.sb.notifications() if self.ap.LANG.t("n_meeting_missing") in n[0]]
+        self.assertEqual(len(missing), 1, self.sb.notifications())
+        self.assertIn(outcomes.problem(), self.sb.status()["problems"])
+
     def test_a_recording_started_from_the_app_ends_with_its_call(self):
         # The user stopped and started again mid-call; when the call ends, the recording must end too.
         self.sb.mic_users("com.google.Chrome.helper")

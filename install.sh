@@ -284,6 +284,13 @@ fi
 if [[ " $minutes_missing " == *" vad "* ]]; then
   minutes_setup "VAD model" --vad
 fi
+# The smaller model the recordings we start ask for (lib/minutes_record.py): the health check above only looks at
+# the model in the user's own Minutes config, so with another one there this is never fetched.
+recording_model="$("$PY" "$APP/tools/setup_minutes.py" --recording-model-missing 2>/dev/null || true)"
+if [ -n "$recording_model" ]; then
+  echo "  downloading Minutes' $recording_model model (the transcript after each recording) ..."
+  minutes_setup "$recording_model model" --model "$recording_model" --download-only
+fi
 "$PY" "$APP/tools/setup_minutes.py" | sed 's/^/  /'
 
 if [ "$SERVICE" = 1 ]; then
@@ -308,12 +315,7 @@ plistlib.dump({
     },
 }, open(plist, "wb"))
 PY
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-for attempt in 1 2 3 4 5; do
-  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && break
-  [ "$attempt" = 5 ] && die "could not start $LABEL (launchctl bootstrap failed)"
-  sleep 1
-done
+"$APP/tools/launchd-start.sh" "$LABEL" "$PLIST" || die "could not start $LABEL (launchctl bootstrap failed)"
 echo "  running; log: $APP/state/autopilot.log"
 else
   step "Background service: skipped (--no-service)"
@@ -334,7 +336,8 @@ step "Remaining manual steps"
 cat <<EOF
   1. Permissions (System Settings → Privacy & Security), allow once:
      - Microphone and Screen & System Audio Recording: Minutes
-     - Screen & System Audio Recording: switch on "claude-meeting Screen"
+     - Screen & System Audio Recording: switch on "claude-meeting Screen" (listed as "MeetingCopilotScreen" on
+       some Macs; added switched off)
        (the installer asked macOS to add it; if it is missing, use + and pick $SCREEN_APP)
      open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
   2. Voiceprint, so the assistant knows which microphone speech is you:

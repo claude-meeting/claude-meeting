@@ -120,7 +120,12 @@ step "the setup guide's steps, in its order"
 check vm "\"$BUNDLED/sync-engine.sh\" \"$ENGINE\" '$VERSION'"
 check vm "\"$ENGINE/install.sh\" --get-minutes --get-claude --only-prerequisites"
 check vm 'test -x /Applications/Minutes.app/Contents/MacOS/minutes && test -x "$HOME/.local/bin/claude"'
+# A user of Minutes before this app, on another of its models: Minutes' own setup and health check then never fetch
+# the model our recordings use, and every meeting ended with no file (claude-meeting/claude-meeting#1).
+check vm "/Applications/Minutes.app/Contents/MacOS/minutes setup --model base > /tmp/minutes-base.log 2>&1 && test ! -e \"\$HOME/.minutes/models/ggml-small.bin\""
 check vm "\"$ENGINE/install.sh\" --no-service --name 'VM Test' 2>&1 | tail -20"
+check vm '[ "$(stat -f %z "$HOME/.minutes/models/ggml-small.bin" 2>/dev/null || echo 0)" -gt 50000000 ]'
+check vm "grep -q '^model = \"base\"' \"\$HOME/.config/minutes/config.toml\""   # their own choice untouched
 check vm "test -s \"$ENGINE/app/state/install.log\""
 check vm "test -s \"$ENGINE/app/models/speaker/\"*.onnx"
 check vm "! xattr -lr \"$ENGINE\" 2>/dev/null | grep -q com.apple.quarantine"   # copied out of a marked app
@@ -135,6 +140,19 @@ done
 
 step "an app update syncs the engine a second time (read-only bundled uv)"
 check vm "\"$BUNDLED/sync-engine.sh\" \"$ENGINE\" '$VERSION' && \"$ENGINE/install.sh\" --no-service > /tmp/rerun.log 2>&1"
+
+step "the background service, installed twice in a row (claude-meeting/claude-meeting#4)"
+# The second install restarts a running service: launchd answered "bootstrap failed" while it was running.
+check vm "\"$ENGINE/install.sh\" > /tmp/service1.log 2>&1 && \"$ENGINE/install.sh\" > /tmp/service2.log 2>&1"
+check vm 'launchctl print "gui/$(id -u)/com.meeting-copilot.autopilot" >/dev/null 2>&1'
+
+step "an older copy of the app under its old name goes to the Trash (claude-meeting/claude-meeting#5)"
+# Before 0.1.17 the app was "Meeting Copilot.app": dragging the new one to Applications left it there, with the
+# same bundle id. A copy that says 0.1.3 stands in for it.
+vm "ditto /Applications/claude-meeting.app '/Applications/Meeting Copilot.app' && plutil -replace CFBundleShortVersionString -string 0.1.3 '/Applications/Meeting Copilot.app/Contents/Info.plist'"
+vm "echo admin | sudo -S launchctl asuser \$(id -u) sudo -u \$(id -un) open /Applications/claude-meeting.app 2>/dev/null; sleep 20"
+check vm "test ! -e '/Applications/Meeting Copilot.app' && ls \"\$HOME/.Trash\" | grep -q 'Meeting Copilot'"
+vm "osascript -e 'quit app \"claude-meeting\"' 2>/dev/null; pkill -x MeetingCopilot 2>/dev/null; true"
 
 step "voiceprint from normal, continuous speech"
 check vm "say -o /tmp/me.aiff \"\$(for i in 1 2 3 4 5 6; do printf 'and then we talked about the plan for the next release '; done)\" && afconvert -f WAVE -d LEI16@16000 -c 1 /tmp/me.aiff /tmp/me.wav && \"$ENGINE/app/asr-venv/bin/python\" \"$ENGINE/app/tools/enroll_voiceprint.py\" /tmp/me.wav --out /tmp/vp.json"

@@ -5,6 +5,8 @@
 #                                   Swift tests, bats script tests, shellcheck
 #   scripts/test.sh --only unit     one group: unit | integration | e2e | python | swift | bats | shellcheck | helpers
 #   scripts/test.sh --live          also the real-model / real-Claude checks (minutes); needs MC_LIVE_MEETING
+#   scripts/test.sh --contracts     also check the fakes' assumptions against the real Minutes and launchd of this
+#                                   Mac (tests/contracts.py; read-only for Minutes, a throwaway launchd job)
 #   scripts/test.sh --no-coverage   skip the coverage threshold (quicker while iterating)
 #
 # Needs app/asr-venv (install.sh creates it; or `make venv`), and for the script groups: bats, shellcheck.
@@ -16,11 +18,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/app"
 PY="$APP/asr-venv/bin/python"
 MIN_COVERAGE="${MIN_COVERAGE:-85}"
-ONLY=""; LIVE=0; COVERAGE=1
+ONLY=""; LIVE=0; COVERAGE=1; CONTRACTS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --only) ONLY="$2"; shift 2 ;;
-    --live) LIVE=1; shift ;;
+    --live) LIVE=1; CONTRACTS=1; shift ;;
+    --contracts) CONTRACTS=1; shift ;;
     --no-coverage) COVERAGE=0; shift ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -85,6 +88,11 @@ if want shellcheck; then
     shellcheck -S warning "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT"/scripts/*.sh "$APP"/tools/*.sh "$APP"/macos/*.sh \
       "$APP/bin/minutes" "$APP/bin/copilot-name" "$APP/bin/copilot-known" || fail "shellcheck"
   else fail "shellcheck is not installed (brew install shellcheck)"; fi
+fi
+
+if [ "$CONTRACTS" = 1 ]; then
+  step "Contracts: the fakes' assumptions against the real Minutes and launchd"
+  (cd "$APP" && "$PY" -m unittest tests.contracts) || fail "contracts"
 fi
 
 if [ "$LIVE" = 1 ]; then

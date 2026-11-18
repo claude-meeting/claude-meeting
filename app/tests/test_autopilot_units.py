@@ -613,7 +613,7 @@ class ScreenCapture(Base):
         args = plistlib.loads(plist.read_bytes())["ProgramArguments"]
         self.assertEqual(args[0], ap.SCREEN_CAPTURE)
         self.assertIn("--displays", args)
-        self.assertTrue(cap.running())
+        self.assertTrue(cap.running())                                       # "xpcproxy" counts too
         self.assertEqual([a[0] for n, a in self.sb.calls("launchctl") if a[0] != "print"][-2:], ["bootout", "bootstrap"])
         cap.ensure("rec-7")                                                  # same session: no new bootstrap
         self.assertEqual(len([a for n, a in self.sb.calls("launchctl") if a[0] == "bootstrap"]), 1)
@@ -639,10 +639,20 @@ class ScreenCapture(Base):
         cap.ensure("rec-2")
         self.assertEqual(len([a for n, a in self.sb.calls("launchctl") if a[0] == "bootstrap"]), 4)
         self.assertIn("screen capture started for rec-2: ok (attempt 3)", self.sb.log())
-        self.assertTrue(cap.running())
+        self.assertTrue(cap.running())                                       # "xpcproxy" counts too
         (self.sb.fake / "bootstrap-fails").write_text("9")
         cap.ensure("rec-3")
         self.assertIn("screen capture started for rec-3: failed", self.sb.log())
+
+    def test_a_job_loaded_despite_a_bootstrap_error_counts_as_started(self):
+        # Real launchd can answer "5: Input/output error" and still load the job, which then says "xpcproxy",
+        # not "running", for a moment: loaded counts (claude-meeting/claude-meeting#4, tests/contracts.py).
+        cap = self.ap.ScreenCap()
+        (self.sb.fake / "bootstrap-fails").write_text("9")
+        (self.sb.fake / "loads-anyway").write_text("")
+        cap.ensure("rec-1")
+        self.assertIn("screen capture started for rec-1: ok", self.sb.log())
+        self.assertNotIn("(attempt", self.sb.log())
 
     def test_target_app_and_permission_warning(self):
         ap = self.ap
@@ -661,6 +671,20 @@ class ScreenCapture(Base):
         cap2 = ap.ScreenCap()
         cap2.ensure("rec-9")
         self.assertIsNone(cap2.session)
+
+    def test_the_permission_warning_is_judged_again_for_each_recording(self):
+        # Issue #2: one refused capture kept "no permission" in the menu for every later meeting, after the
+        # permission had been granted, until the engine restarted.
+        ap = self.ap
+        cap = ap.ScreenCap()
+        cap.ensure("rec-1")
+        (cap.out_dir / "capture.err").write_text("error: TCC denied screen capture\n")
+        cap.check_permission()
+        self.assertTrue(cap.warned)
+        cap.stop()
+        cap.ensure("rec-2")                                                  # granted meanwhile: no TCC error
+        cap.check_permission()
+        self.assertFalse(cap.warned)
 
     def test_capture_watch_reports_device_changes(self):
         ap = self.ap
@@ -1107,6 +1131,181 @@ class MeetingRecordFromOurTranscript(Base):
         record = self.ap.MeetingRecord()                                        # started after the file was written
         record.poll(processing=False)
         self.assertIn("whisper", md.read_text())
+
+
+class MinutesPostMeetingJob(Base):
+    """Issue #1: Minutes' job after a recording failed every time (its model was missing) and nobody was told."""
+
+    def job(self, state, job_id, created, error=None):
+        j = {"id": job_id, "mode": "meeting", "title": f"Call {job_id}", "state": state, "created_at": created}
+        if error:
+            j["error"] = error
+        return j
+
+    def test_a_failed_job_is_a_problem_until_a_later_one_succeeds(self):
+        ap = self.ap
+        error = 'Transcription model not found. Expected model file "ggml-small.bin" in ~/.minutes/models.\n\nTo fix ...'
+        self.sb.minutes(jobs=[self.job("complete", "j1", "2026-01-15T10:00:00"),
+                              self.job("failed", "j2", "2026-01-15T11:00:00", error)])
+        jobs = ap.MinutesJobs()
+        jobs.poll(False, False)
+        self.assertIn('Expected model file "ggml-small.bin"', jobs.problem)
+        self.assertIn("Call j2", jobs.problem)
+        notes = [n for n in self.sb.notifications() if ap.LANG.t("n_minutes_job_failed") in n[0]]
+        self.assertEqual(len(notes), 1)
+        jobs.poll(False, True)                                               # processing again, then idle
+        self.clock.sleep(31)
+        jobs.poll(False, False)
+        self.assertEqual(len([n for n in self.sb.notifications() if ap.LANG.t("n_minutes_job_failed") in n[0]]), 1)
+        self.assertEqual(ap.MinutesJobs().reported, ["j2"])                  # remembered across restarts
+        self.sb.minutes(jobs=[self.job("failed", "j2", "2026-01-15T11:00:00", error),
+                              self.job("complete", "j3", "2026-01-15T12:00:00")])
+        jobs.poll(False, True)
+        self.clock.sleep(31)
+        jobs.poll(False, False)
+        self.assertIsNone(jobs.problem)
+
+    def test_a_job_still_under_way_is_read_again_until_it_ends(self):
+        # A quick recording: no poll saw Minutes processing, and its job was still running at the first look.
+        ap = self.ap
+        jobs = ap.MinutesJobs()
+        self.sb.minutes(jobs=[])
+        jobs.poll(False, False)                                              # the look at start
+        jobs.poll(True, False)                                               # a recording, then it stops
+        self.sb.minutes(jobs=[self.job("running", "j1", "2026-01-15T10:00:00")])
+        self.clock.sleep(31)
+        jobs.poll(False, False)
+        self.assertTrue(jobs.pending)
+        self.assertIsNone(jobs.problem)
+        self.sb.minutes(jobs=[self.job("failed", "j1", "2026-01-15T10:00:00", "boom")])
+        jobs.poll(False, False)                                              # too soon: not asked again yet
+        self.assertIsNone(jobs.problem)
+        self.clock.sleep(31)
+        jobs.poll(False, False)
+        self.assertIn("boom", jobs.problem)
+        self.assertFalse(jobs.pending)
+        self.sb.minutes(jobs=[{"mode": "meeting", "state": "failed", "created_at": "2026-01-15T11:00:00"}])
+        jobs.poll(True, False)
+        self.clock.sleep(31)
+        jobs.poll(False, False)                                              # no id: still reported once
+        self.assertEqual(jobs.reported, ["j1", "2026-01-15T11:00:00"])
+
+    def test_jobs_are_read_once_processing_ends_not_while_recording(self):
+        ap = self.ap
+        self.sb.minutes(jobs=[self.job("failed", "j1", "2026-01-15T10:00:00", "boom")])
+        jobs = ap.MinutesJobs()
+        jobs.poll(True, False)                                               # recording: not yet
+        self.assertIsNone(jobs.problem)
+        jobs.poll(False, False)
+        self.assertEqual(jobs.problem, ap.LANG.t("n_minutes_job_failed_body", title="Call j1", error="boom"))
+        self.sb.minutes(jobs="not a list")
+        jobs.poll(False, True)
+        self.clock.sleep(31)
+        jobs.poll(False, False)                                              # unreadable answer: kept as it was
+        self.assertIsNotNone(jobs.problem)
+        self.assertTrue(jobs.pending)                                        # and asked again later
+
+    def test_the_model_our_recordings_use_is_fetched_while_idle(self):
+        ap = self.ap
+        model = self.sb.home / ".minutes" / "models" / "ggml-small.bin"
+        self.assertFalse(model.exists())
+        jobs = ap.MinutesJobs()
+        jobs.poll(True, False)                                               # never during a recording
+        self.assertFalse([a for n, a in self.sb.calls("minutes") if a[:1] == ["setup"]])
+        jobs.poll(False, False)
+        self.assertTrue(self.sb.wait_for(lambda: jobs.download.poll() is not None, 20))
+        self.assertIn(["setup", "--model", "small", "--download-only"],
+                      [a for n, a in self.sb.calls("minutes") if a[:1] == ["setup"]])
+        self.assertTrue(model.exists())
+        jobs.poll(False, False)
+        self.assertIn("minutes model download ended (exit 0)", self.sb.log())
+
+    def test_a_download_stops_when_a_recording_starts(self):
+        ap = self.ap
+
+        class Proc:
+            terminated = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                Proc.terminated = True
+
+        jobs = ap.MinutesJobs()
+        jobs.download = Proc()
+        jobs.partial = self.sb.home / ".minutes" / "models" / "ggml-small.bin"
+        jobs.partial.parent.mkdir(parents=True, exist_ok=True)
+        with open(jobs.partial, "wb") as f:
+            f.truncate(80_000_000)                                           # big enough to look installed
+        jobs.poll(True, False)
+        self.assertTrue(Proc.terminated)
+        self.assertIsNone(jobs.download)
+        self.assertFalse((self.sb.home / ".minutes" / "models" / "ggml-small.bin").exists())
+        self.assertIn("minutes model download stopped", self.sb.log())
+
+
+class RecordOutcomesAtTheEnd(Base):
+    """After a meeting the user expects its file in ~/meetings: one that never comes is reported."""
+
+    def setUp(self):
+        super().setUp()
+        self.out = self.ap.RecordOutcomes()
+        self.out.WAIT_SECS, self.out.CHECK_SECS = 100, 0
+
+    def meeting_file(self, started, name="m.md"):
+        iso = self.ap.datetime.fromtimestamp(started).astimezone().isoformat()
+        (self.sb.meetings / name).write_text(f"---\ntitle: call\ndate: {iso}\n---\n## Transcript\n")
+
+    def missing_notes(self):
+        return [n for n in self.sb.notifications() if self.ap.LANG.t("n_meeting_missing") in n[0]]
+
+    def test_a_meeting_with_no_file_is_reported_once_and_cleared_when_it_turns_up_late(self):
+        now = self.clock.time()
+        self.out.add(now - 600, now, "Weekly")
+        self.out.poll(False, False)
+        self.assertIsNone(self.out.problem())                            # not yet: within WAIT_SECS
+        self.clock.sleep(101)
+        self.out.poll(False, False)
+        self.assertIn("Weekly", self.out.problem())
+        self.out.poll(False, False)
+        self.assertEqual(len(self.missing_notes()), 1)
+        self.assertEqual(self.ap.RecordOutcomes().missing[0]["title"], "Weekly")   # kept across restarts
+        self.meeting_file(now - 600)                                     # Minutes was late, not lost
+        self.out.poll(False, False)
+        self.assertIsNone(self.out.problem())
+
+    def test_another_meeting_s_file_does_not_count(self):
+        now = self.clock.time()
+        self.out.add(now - 600, now, "Weekly")
+        self.meeting_file(now - 86400, "yesterday.md")                   # touched now, but another meeting's
+        self.clock.sleep(101)
+        self.out.poll(False, False)
+        self.assertIn("Weekly", self.out.problem())
+
+    def test_it_waits_while_minutes_is_busy_and_a_short_recording_is_not_followed(self):
+        now = self.clock.time()
+        self.out.add(now - 30, now, "Oops")                              # under MIN_SECS
+        self.out.add(now - 600, now, "Weekly")
+        self.clock.sleep(101)
+        self.ap.MINUTES_JOBS.busy = True                                 # its job is queued behind another
+        self.out.poll(False, False)
+        self.out.poll(True, False)
+        self.assertIsNone(self.out.problem())
+        self.ap.MINUTES_JOBS.busy = False
+        self.out.poll(False, False)
+        self.assertIn("Weekly", self.out.problem())
+        self.assertEqual([m["title"] for m in self.out.missing], ["Weekly"])
+
+    def test_a_failed_job_already_told_is_not_told_twice(self):
+        now = self.clock.time()
+        self.ap.MINUTES_JOBS.problem = self.ap.LANG.t("n_minutes_job_failed_body", title="Weekly", error="x")
+        self.out.add(now - 600, now, "Weekly")
+        self.clock.sleep(101)
+        self.out.poll(False, False)
+        self.assertEqual(self.missing_notes(), [])
+        self.assertIn("Weekly", self.out.problem())                      # still shown
+        self.ap.MINUTES_JOBS.problem = None
 
 
 if __name__ == "__main__":

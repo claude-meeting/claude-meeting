@@ -20,6 +20,8 @@ Usage: setup_minutes.py [--dry-run]     apply the settings
        setup_minutes.py --recording-config <file>
                                         write Minutes' config for a recording we start (lib/minutes_record.py):
                                         exit 1, writing nothing, when Minutes' own transcript is the record
+       setup_minutes.py --recording-model-missing
+                                        print the Whisper model that config asks for when it is not installed
 """
 import json
 import re
@@ -187,6 +189,8 @@ def recording_config(out):
     if text is None:
         return False
     for dotted, value in minutes_record.RECORDING_OVERRIDES.items():
+        if dotted == "transcription.model" and not minutes_record.model_installed(minutes_record.model_file(text, value)):
+            continue                          # not installed (yet): the user's own model, or the job would fail
         section, key = dotted.rsplit(".", 1)
         text = set_key(text, section, key, value)
     tomllib.loads(text)
@@ -197,6 +201,9 @@ def recording_config(out):
 
 
 if __name__ == "__main__":
+    if "--recording-model-missing" in sys.argv:      # install.sh: the model to fetch for our recordings, if any
+        print(minutes_record.recording_model_missing(MINUTES_CONFIG) or "")
+        sys.exit(0)
     if "--recording-config" in sys.argv:
         sys.exit(0 if recording_config(sys.argv[sys.argv.index("--recording-config") + 1]) else 1)
     if "--undo" in sys.argv:

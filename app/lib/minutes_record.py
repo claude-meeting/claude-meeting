@@ -10,12 +10,51 @@ rec-<epoch> name are the same recording's start, a second or two apart.
 """
 import json
 import re
+import tomllib
 from datetime import datetime
 from pathlib import Path
 
 import speakers
 
 RECORDING_OVERRIDES = {"transcription.model": "small", "summarization.engine": "none"}
+
+
+def model_file(minutes_text, model):
+    """The file of Whisper model `model` in Minutes' model folder ([transcription] model_path of its config text)."""
+    folder = Path.home() / ".minutes" / "models"
+    try:
+        folder = Path(tomllib.loads(minutes_text).get("transcription", {}).get("model_path") or folder).expanduser()
+    except tomllib.TOMLDecodeError:
+        pass
+    return folder / f"ggml-{model}.bin"
+
+
+def recording_model_missing(minutes_config=None):
+    """The Whisper model our recordings ask Minutes for (RECORDING_OVERRIDES) when its file is not installed, else
+    None. Minutes' own setup and health check only look at the model in the user's config, so a user on another
+    model never gets this one, and every post-meeting job then fails ("Transcription model not found")."""
+    model = RECORDING_OVERRIDES["transcription.model"]
+    return None if model_installed(recording_model_path(minutes_config)) else model
+
+
+def recording_model_path(minutes_config=None):
+    """Where the Whisper model our recordings ask for goes (Minutes' model folder from its config)."""
+    try:
+        text = Path(minutes_config or Path.home() / ".config" / "minutes" / "config.toml").read_text()
+    except OSError:
+        text = ""
+    return model_file(text, RECORDING_OVERRIDES["transcription.model"])
+
+
+MODEL_MIN_BYTES = 50_000_000                  # the smallest Whisper model is ~75 MB: less is a download cut short
+
+
+def model_installed(path):
+    """A model file, and not one an interrupted download left behind."""
+    try:
+        return path.is_file() and path.stat().st_size >= MODEL_MIN_BYTES
+    except OSError:
+        return False
 MATCH_SECS = 30
 DATE = re.compile(r"^date:\s*(\S+)\s*$", re.M)
 

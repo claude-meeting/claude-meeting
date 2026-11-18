@@ -70,7 +70,8 @@ The app opens a setup guide that installs what is missing, with progress shown:
 - **Your model**: install Claude Code and sign in to your Claude account, or choose *Use another model service…*.
 - **Speech recognition** (about 7 GB, a few minutes).
 - **Permissions**: allow Minutes the Microphone and Screen & System Audio Recording, and switch on
-  *claude-meeting Screen* under Screen & System Audio Recording. The guide's buttons open the right page.
+  *claude-meeting Screen* under Screen & System Audio Recording. Some Macs list it as *MeetingCopilotScreen*: that
+  is the same helper, not a leftover, and macOS adds it switched off. The guide's buttons open the right page.
 - **Your voiceprint**: 30 seconds of you talking, so speech from people near you is not taken for yours.
 
 <img src="docs/images/setup-guide-en.png" width="560" alt="The setup guide: Minutes, Claude account, speech recognition, permissions, voiceprint">
@@ -128,13 +129,20 @@ capture and how long things are kept. Every other setting, and the command-line 
 - **"claude-meeting" Not Opened**: see [step 2](#2-open-it-the-first-time-open-anyway).
 - **No recording when a call starts**: the menu should say *Recording*. If it lists a problem, run the setup guide
   again (menu → Setup…): it shows what is missing.
-- **No screen text, or "No permission to capture the screen"**: switch on *claude-meeting Screen* in System
-  Settings → Privacy & Security → Screen & System Audio Recording.
+- **No screen text, or "No permission to capture the screen"**: switch on *claude-meeting Screen* (or
+  *MeetingCopilotScreen*, as some Macs list it) in System Settings → Privacy & Security → Screen & System Audio
+  Recording. Do not remove it: it would ask again at every recording.
 - **No notes or answers**: Claude Code must be signed in (the setup guide's *Your Claude account* step), or the
   other service must pass *Test* in Settings.
 - Still stuck: [open an issue](https://github.com/claude-meeting/claude-meeting/issues) and attach
   `~/Library/Application Support/Meeting Copilot/engine/app/state/autopilot.log`, after checking it for anything
   private.
+
+## Updating
+
+Drag the new claude-meeting to Applications and open it: when it carries a newer engine, the setup guide opens with
+**Update the engine**, and the menu shows a warning until you do. Before 0.1.17 the app was called *Meeting
+Copilot*; the new app moves the old one to the Trash and tells you.
 
 ## Uninstall
 

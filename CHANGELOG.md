@@ -2,6 +2,25 @@
 
 The project's public history starts here, with its first public release.
 
+## v0.1.18 (2026-11-18)
+
+Fixes from the first reports (claude-meeting/claude-meeting #1–#5):
+
+- **The transcript after each meeting no longer fails when Minutes uses another model** (#1). Recordings ask Minutes
+  for its `small` Whisper model, which setup only fetched when it was Minutes' own choice; every post-meeting job
+  then failed and the meeting got no file in `~/meetings`. Setup and the engine now fetch it (never during a
+  meeting), a recording falls back to the model you have until then, and a failed post-meeting job shows up in the
+  menu and as a notification.
+- **"No permission to capture the screen" goes away once it is granted** (#2): it is judged per recording.
+- **The screen helper's name** (#3): System Settings may list it as *MeetingCopilotScreen*; the guide, README and
+  messages now say so, and that it is added switched off.
+- **The installer no longer fails while the service is running** (#4): it waits for the old job to unload and
+  counts a running job as started when launchd reports an error.
+- **A meeting that ends without a record is reported**: half an hour after a meeting of a minute or more, if
+  `~/meetings` still has no file for it, a notification and the menu say so, whatever the cause.
+- **Updating from Meeting Copilot** (#5): the app moves the old app to the Trash (and says so), and the menu warns while
+  the engine it carries is not installed yet. The README has an *Updating* section.
+
 ## v0.1.17 (2026-11-16)
 
 The first public release. What you get:

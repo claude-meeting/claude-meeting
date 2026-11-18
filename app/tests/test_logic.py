@@ -17,6 +17,7 @@ sys.path.insert(0, str(APP / "lib"))
 sys.path.insert(0, str(APP / "tools"))
 import asr  # noqa: E402
 import i18n  # noqa: E402
+import minutes_record  # noqa: E402
 import realtime  # noqa: E402
 import screen  # noqa: E402
 import setup_minutes  # noqa: E402
@@ -513,9 +514,21 @@ class MinutesConfig(unittest.TestCase):
             saved = (setup_minutes.MINUTES_CONFIG, config.load)
             setup_minutes.MINUTES_CONFIG = d / "config.toml"
             try:
-                setup_minutes.MINUTES_CONFIG.write_text('[transcription]\nmodel = "large-v3"\nlanguage = "zh"\n')
+                models = d / "models"
+                models.mkdir()
+                setup_minutes.MINUTES_CONFIG.write_text(
+                    f'[transcription]\nmodel = "large-v3"\nlanguage = "zh"\nmodel_path = "{models}"\n')
                 config.load = lambda: {"user": {"language": "zh-TW"}}
                 out = d / "state" / "minutes-recording.toml"
+                # Issue #1: without ggml-small.bin every job failed; the user's own (installed) model is kept then.
+                self.assertEqual(minutes_record.recording_model_missing(setup_minutes.MINUTES_CONFIG), "small")
+                self.assertTrue(setup_minutes.recording_config(out))
+                self.assertIn('model = "large-v3"', out.read_text())
+                (models / "ggml-small.bin").write_bytes(b"x")                 # a download cut short
+                self.assertEqual(minutes_record.recording_model_missing(setup_minutes.MINUTES_CONFIG), "small")
+                with open(models / "ggml-small.bin", "wb") as f:
+                    f.truncate(80_000_000)
+                self.assertIsNone(minutes_record.recording_model_missing(setup_minutes.MINUTES_CONFIG))
                 self.assertTrue(setup_minutes.recording_config(out))
                 text = out.read_text()
                 self.assertIn('model = "small"', text)

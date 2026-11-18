@@ -58,7 +58,7 @@ App 會打開設定精靈，缺什麼就裝什麼，有進度條：
 - **Minutes**：開源的錄音程式。
 - **你的模型**：安裝 Claude Code 並登入你的 Claude 帳號，或選「改用其他模型服務…」。
 - **語音辨識**：約 7 GB，需要幾分鐘。
-- **權限**：允許 Minutes 使用「麥克風」與「螢幕與系統錄音」，並在「螢幕與系統錄音」打開「claude-meeting Screen」。精靈裡的按鈕會直接打開對的頁面。
+- **權限**：允許 Minutes 使用「麥克風」與「螢幕與系統錄音」，並在「螢幕與系統錄音」打開「claude-meeting Screen」。有些 Mac 會列為「MeetingCopilotScreen」：那就是同一個輔助程式，不是舊版殘留，而且 macOS 加入時預設是關的。精靈裡的按鈕會直接打開對的頁面。
 - **你的聲紋**：錄 30 秒你講話的聲音，旁人講話才不會被當成你。
 
 <img src="docs/images/setup-guide-zh.png" width="560" alt="設定精靈：Minutes、Claude 帳號、語音辨識、權限、聲紋">
@@ -93,9 +93,13 @@ App 會打開設定精靈，缺什麼就裝什麼，有進度條：
 
 - **macOS 擋下、打不開**：見[第 2 步](#2-第一次打開按強制打開)。
 - **開會時沒有錄音**：選單應該顯示「錄音中」。如果列出問題，重新跑設定精靈（選單 →「設定精靈…」），它會顯示缺了什麼。
-- **讀不到畫面文字，或通知「畫面擷取沒有權限」**：到「系統設定 → 隱私權與安全性 → 螢幕與系統錄音」打開「claude-meeting Screen」。
+- **讀不到畫面文字，或通知「畫面擷取沒有權限」**：到「系統設定 → 隱私權與安全性 → 螢幕與系統錄音」打開「claude-meeting Screen」（有些 Mac 列為「MeetingCopilotScreen」）。不要把它移除，否則每次錄音都會再問一次。
 - **沒有筆記或回答**：Claude Code 要先登入（設定精靈的「你的 Claude 帳號」），或其他服務要在設定裡通過「測試連線」。
 - 還是不行：[開一個 issue](https://github.com/claude-meeting/claude-meeting/issues)，附上 `~/Library/Application Support/Meeting Copilot/engine/app/state/autopilot.log`（先確認裡面沒有不想公開的內容）。
+
+## 更新
+
+把新版 claude-meeting 拖到「應用程式」再打開：新版帶了較新的引擎時，設定精靈會打開並顯示「更新引擎」，更新之前選單也會一直提示。0.1.17 以前 App 叫做 Meeting Copilot，新版會把舊版移到垃圾桶並通知你。
 
 ## 移除
 

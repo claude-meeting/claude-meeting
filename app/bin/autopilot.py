@@ -771,14 +771,16 @@ class ScreenCap:
         self.warned = False
 
     def running(self):
+        """Running, or being started: launchd shows a job it just loaded as "xpcproxy" for a moment."""
         r = run([LAUNCHCTL, "print", f"gui/{os.getuid()}/{self.LABEL}"], timeout=5)
-        return bool(r and r.returncode == 0 and "state = running" in r.stdout)
+        return bool(r and r.returncode == 0 and ("state = running" in r.stdout or "state = xpcproxy" in r.stdout))
 
     def ensure(self, session):
         if not SCREEN.get("enabled", True) or not session or session == self.session:
             return
         self.stop()
         self.session = session
+        self.warned = False                   # judged per recording: permission may have been granted since
         self.out_dir = STATE / "screens" / session
         self.out_dir.mkdir(parents=True, exist_ok=True)
         (self.out_dir / "STOP").unlink(missing_ok=True)
@@ -800,12 +802,16 @@ class ScreenCap:
         run([LAUNCHCTL, "bootout", f"gui/{os.getuid()}/{self.LABEL}"], timeout=10)
         ok = False
         for attempt in range(4):
+            gone = False
             for _ in range(20):
                 if not self.loaded():
+                    gone = True
                     break
                 time.sleep(0.5)
             r = run([LAUNCHCTL, "bootstrap", f"gui/{os.getuid()}", str(plist)], timeout=10)
-            ok = bool(r and r.returncode == 0)
+            # launchd can answer "5: Input/output error" although it loaded the job (app/tools/launchd-start.sh):
+            # loaded counts, when the old job had gone first.
+            ok = bool(r and r.returncode == 0) or (gone and self.loaded())
             if ok:
                 break
             time.sleep(1)
@@ -817,7 +823,7 @@ class ScreenCap:
         return bool(r and r.returncode == 0)
 
     def check_permission(self):
-        """Warn once if the tool is being refused by macOS (then Minutes' screenshots are used)."""
+        """Warn once per recording if the tool is being refused by macOS (then Minutes' screenshots are used)."""
         err = self.out_dir / "capture.err" if self.out_dir else None
         if self.warned or not err or not err.exists():
             return
@@ -980,6 +986,171 @@ class MeetingRecord:
 
 
 MEETING_RECORD = MeetingRecord()
+
+
+class MinutesJobs:
+    """Minutes' job after a recording (its transcript, which MeetingRecord then replaces) can fail, and Minutes tells
+    nobody: the meeting then has no file in ~/meetings at all. Once a recording or Minutes' processing ends its
+    jobs are read, again every CHECK_SECS while the latest is still under way; a failed latest job is logged,
+    notified once and shown as a problem until a later job succeeds.
+    Also fetches, while idle, the Whisper model our recordings ask for when it is missing (minutes_record)."""
+
+    PATH = STATE / "minutes-jobs.json"        # {"reported": [failed jobs already notified, oldest first]}
+    MODEL_RETRY_SECS = 3600
+    CHECK_SECS = 30
+    DONE = ("complete", "failed", "cancelled")   # every state Minutes ends a job in (tests/contracts.py checks)
+
+    def __init__(self):
+        try:
+            self.reported = [str(k) for k in json.loads(self.PATH.read_text()).get("reported", [])]
+        except (OSError, ValueError, AttributeError, TypeError):
+            self.reported = []
+        self.pending = True                   # read the jobs once at start too
+        self.busy = False                     # Minutes' latest job is queued or running (as last read)
+        self.checked_at = 0.0
+        self.problem = None
+        self.download = None
+        self.download_at = 0.0
+        self.partial = None                   # the model file our download writes: removed if it is cut short
+
+    def _drop_partial(self):
+        """A download cut short can leave a model file that looks installed (and then every job fails with it)."""
+        if self.partial:
+            self.partial.unlink(missing_ok=True)
+            self.partial = None
+
+    def poll(self, recording, processing):
+        if recording and self.download and self.download.poll() is None:
+            self.download.terminate()         # no download while a meeting is recorded; tried again later
+            self.download = None
+            self.download_at = 0.0
+            self._drop_partial()
+            log("minutes model download stopped: a recording started")
+        if recording or processing:
+            self.pending = True               # a recording's job comes once it stops, even a quick one
+            return
+        if self.pending and time.time() - self.checked_at >= self.CHECK_SECS:
+            self.checked_at = time.time()
+            self.pending = not self._check_jobs()
+        self._fetch_model()
+
+    def _check_jobs(self):
+        """Read Minutes' jobs: True once the latest is finished (or there is none to wait for)."""
+        r = run([MINUTES, "jobs", "--all", "--json", "--limit", "10"], timeout=30)
+        try:
+            jobs = json.loads(r.stdout) if r and r.returncode == 0 else None
+        except ValueError:
+            jobs = None
+        if not isinstance(jobs, list):
+            self.busy = False                 # unknown: nothing waits on it
+            return False                      # no answer: asked again later
+        jobs = sorted((j for j in jobs if isinstance(j, dict) and j.get("mode", "meeting") == "meeting"),
+                      key=lambda j: str(j.get("created_at", "")))
+        if not jobs:
+            self.busy = False
+            return True
+        last = jobs[-1]
+        self.busy = last.get("state") not in self.DONE
+        if self.busy:
+            return False                      # queued or still running: it may yet fail
+        if last.get("state") != "failed":
+            if self.problem:
+                log("minutes job: ok again")
+            self.problem = None
+            return True
+        error = (str(last.get("error") or "?").strip().splitlines() or ["?"])[0]
+        self.problem = LANG.t("n_minutes_job_failed_body", title=last.get("title") or "?", error=error)
+        key = str(last.get("id") or last.get("created_at") or error)
+        if key not in self.reported:
+            log(f"minutes job {key} failed: {error}")
+            notify(LANG.t("n_minutes_job_failed"), self.problem, sound="Basso")
+            self.reported = (self.reported + [key])[-50:]
+            speakers.atomic_write(self.PATH, json.dumps({"reported": self.reported}))
+        return True
+
+    def _fetch_model(self):
+        if self.download and self.download.poll() is None:
+            return
+        if self.download:
+            log(f"minutes model download ended (exit {self.download.returncode})")
+            if self.download.returncode != 0:
+                self._drop_partial()
+            self.download = None
+        if time.time() - self.download_at < self.MODEL_RETRY_SECS:
+            return
+        self.download_at = time.time()
+        model = minutes_record.recording_model_missing()
+        if model:
+            log(f"minutes: the {model} model our recordings use is missing; downloading it")
+            self.partial = minutes_record.recording_model_path()
+            self.download = subprocess.Popen([str(MINUTES), "setup", "--model", model, "--download-only"],
+                                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                             stderr=subprocess.DEVNULL)
+
+
+MINUTES_JOBS = MinutesJobs()
+
+
+class RecordOutcomes:
+    """The outcome a user expects after a meeting, checked at the end: its file in ~/meetings, whatever the cause
+    when it is missing (a failed Minutes job has its own, more precise notice). Each meeting is matched to its own
+    file by its start, as MeetingRecord does, and the list is kept on disk so a restart does not drop it.
+    A meeting is given up on WAIT_SECS after it stopped, and only while Minutes is not busy: a job still queued
+    behind another is waited for. A missing one is notified once and shown (outside recordings) until its file
+    turns up, or for a day."""
+
+    PATH = STATE / "record-outcomes.json"     # {"waiting": [...], "missing": [...]}: {"started", "stopped", "title"}
+    WAIT_SECS = 1800
+    MIN_SECS = 60                             # shorter recordings are not followed (started by mistake)
+    KEEP_SECS = 86400
+    CHECK_SECS = 30
+
+    def __init__(self):
+        try:
+            data = json.loads(self.PATH.read_text())
+            self.waiting, self.missing = list(data.get("waiting", [])), list(data.get("missing", []))
+        except (OSError, ValueError, AttributeError):
+            self.waiting, self.missing = [], []
+        self.checked_at = 0.0
+
+    def _save(self):
+        speakers.atomic_write(self.PATH, json.dumps({"waiting": self.waiting, "missing": self.missing},
+                                                    ensure_ascii=False))
+
+    def add(self, started, stopped, title):
+        """A recording stopped. `started` is the meeting's first start (a restart after lost call audio continues
+        the same meeting, whose later parts' files join the first one's)."""
+        if started and stopped - started >= self.MIN_SECS:
+            self.waiting.append({"started": started, "stopped": stopped, "title": title or "?"})
+            self._save()
+
+    def poll(self, recording, processing):
+        now = time.time()
+        if now - self.checked_at < self.CHECK_SECS or not (self.waiting or self.missing):
+            return
+        self.checked_at = now
+        before = (len(self.waiting), len(self.missing))
+        found = lambda m: minutes_record.meeting_file(MEETINGS_DIR, m["started"]) is not None
+        self.waiting = [m for m in self.waiting if not found(m)]
+        self.missing = [m for m in self.missing if not found(m) and now - m["stopped"] < self.KEEP_SECS]
+        busy = recording or processing or MINUTES_JOBS.busy
+        for m in [m for m in self.waiting if not busy and now - m["stopped"] >= self.WAIT_SECS]:
+            self.waiting.remove(m)
+            self.missing.append(m)
+            log(f"meeting {m['title']!r}: no meeting file {int(now - m['stopped'])} s after it stopped")
+            if not (MINUTES_JOBS.problem and m["title"] in MINUTES_JOBS.problem):    # not told twice
+                notify(LANG.t("n_meeting_missing"), self.text(m), sound="Basso")
+        if before != (len(self.waiting), len(self.missing)):
+            self._save()
+
+    def text(self, m):
+        return LANG.t("n_meeting_missing_body", title=m["title"], mins=max(1, round(self.WAIT_SECS / 60)))
+
+    def problem(self):
+        return self.text(self.missing[-1]) if self.missing else None
+
+
+RECORD_OUTCOMES = RecordOutcomes()
 
 
 class CaptureWatch:
@@ -1538,6 +1709,7 @@ def main():
     auto_recording = bool(auto_title)
     title = auto_title or LANG.t("meeting")
     started_at = recording_started_at() if auto_recording else 0
+    meeting_start = started_at        # the meeting's first start: a restart after lost call audio keeps it
     foreign = False       # a recording started outside the autopilot (in Minutes itself)
     retention_proc = None
     cooldown_until = 0
@@ -1569,6 +1741,8 @@ def main():
                 config.LOAD_ERROR,
                 MODEL_CHECK.problem,
                 LANG.t("n_asr_missing").format(model=ASR_MISSING) if ASR_MISSING else None,
+                MINUTES_JOBS.problem,
+                RECORD_OUTCOMES.problem() if not recording else None,
                 *extra,
                 LANG.t("n_screen_denied") if recording and SCREEN_CAP.warned else None,
                 LANG.t("n_call_audio_lost") if recording and CALL_AUDIO.gave_up else None,
@@ -1613,6 +1787,7 @@ def main():
                              "--title", title, "--consent", "na"], timeout=30)
                     if r and r.returncode == 0:
                         manual, manual_call, started_at, recording = True, False, now, True
+                        meeting_start = now
                         MODEL_CHECK.check(title)
                         notify(LANG.t("n_recording_started"), title)
                     else:
@@ -1626,6 +1801,7 @@ def main():
                         AUTO_FLAG.unlink(missing_ok=True)
                         cooldown_until = now + COOLDOWN_SECS
                         pending_done = (now, title)
+                        RECORD_OUTCOMES.add(meeting_start, now, title)
                         recording = False
                         notify(LANG.t("n_recording_stopped"), LANG.t("n_recording_stopped_body", title=title))
                     else:
@@ -1662,6 +1838,7 @@ def main():
                             auto_recording = manual = recording = False
                             AUTO_FLAG.unlink(missing_ok=True)
                             pending_done = (now, title)
+                            RECORD_OUTCOMES.add(meeting_start, now, title)
                 elif lost and not CALL_AUDIO.gave_up:
                     # Out of restarts, or a recording started in Minutes itself (not ours to restart).
                     CALL_AUDIO.gave_up = True
@@ -1693,7 +1870,7 @@ def main():
                 log(f"auto start ({', '.join(users)}): {'ok' if ok else (r.stderr[-200:] if r else 'error')}")
                 if ok:
                     auto_recording = True
-                    started_at = now
+                    started_at = meeting_start = now
                     recording = True   # status polled above predates the start; don't treat it as "ended"
                     AUTO_FLAG.write_text(title)
                     MODEL_CHECK.check(title)
@@ -1717,6 +1894,7 @@ def main():
                     AUTO_FLAG.unlink(missing_ok=True)
                     cooldown_until = now + COOLDOWN_SECS
                     pending_done = (now, title)
+                    RECORD_OUTCOMES.add(meeting_start, now, title)
                     notify(LANG.t("n_recording_stopped"), LANG.t("n_recording_stopped_body", title=title))
                 else:
                     # Still ours: try again shortly rather than leaving Minutes recording for good.
@@ -1729,6 +1907,7 @@ def main():
 
             if recording and not auto_recording and not manual and not foreign:
                 foreign, title, started_at = True, LANG.t("meeting"), recording_started_at()
+                meeting_start = started_at
             if not recording and foreign:
                 foreign = False
             if not recording and manual and now - started_at >= START_GRACE_SECS:
@@ -1786,6 +1965,8 @@ def main():
                 elif now - pending_done[0] > 1800:
                     pending_done = None
             safely("meeting record", MEETING_RECORD.poll, bool(st.get("processing")))
+            safely("minutes jobs", MINUTES_JOBS.poll, recording, bool(st.get("processing")))
+            safely("record outcomes", RECORD_OUTCOMES.poll, recording, bool(st.get("processing")))
 
             publish(recording, bool(st.get("processing")))
 

@@ -12,6 +12,9 @@ extension Notification.Name {
 final class Engine: ObservableObject {
     @Published private(set) var status = EngineStatus()
     @Published private(set) var reachable = false
+    /// engineOutdated, looked at every few seconds (it reads files): what the menu shows.
+    @Published private(set) var outdated = false
+    private var outdatedCheckedAt = Date.distantPast
 
     @Published private(set) var appDir: URL
     private var timer: Timer?
@@ -99,6 +102,11 @@ final class Engine: ObservableObject {
     }
 
     private func poll() {
+        if Date().timeIntervalSince(outdatedCheckedAt) >= 10 {
+            outdatedCheckedAt = Date()
+            let now = engineOutdated
+            if now != outdated { outdated = now }
+        }
         guard installed else {
             if reachable { reachable = false }
             return
