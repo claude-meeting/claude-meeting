@@ -15,9 +15,11 @@ from PIL import Image
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP / "lib"))
 sys.path.insert(0, str(APP / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # tests/mainland_usage.py
 import asr  # noqa: E402
 import i18n  # noqa: E402
 import minutes_record  # noqa: E402
+import mainland_usage  # noqa: E402
 import realtime  # noqa: E402
 import screen  # noqa: E402
 import setup_minutes  # noqa: E402
@@ -177,13 +179,6 @@ class Language(unittest.TestCase):
             self.assertEqual(i18n.family(code), "zh", code)
         self.assertTrue(i18n.chinese("zh-hans") and i18n.chinese("zh") and not i18n.chinese("en"))
 
-    # Taiwan usage that must not be left in Simplified texts (mainland word in the comment of each line).
-    TW_USAGE = ("軟體", "软体", "螢幕", "萤幕", "設定", "设定", "網路", "网路", "程式", "资料夹", "视窗", "登入",
-                "帐号", "品质", "支援", "回馈", "预设", "滑鼠", "列印", "搜寻", "伺服器", "影片", "专案", "透过",
-                "使用者", "介面", "储存", "讯息", "音讯", "视讯", "资讯", "撷取", "金钥", "选单", "辨识", "终端机",
-                "物件", "字串", "阵列", "图示", "台湾", "繁体", "简体字", "「", "」", "接口", "缺省",
-                "设置档", "背景程序", "截屏", "讲者", "垃圾桶", "登录项目", "精灵", "前后文", "脉络", "卷动", "侦测",
-                "本机", "暱", "拷贝", "安装档", "会议纪录", "视频镜头", "屏幕与系统录音")
 
     def test_simplified_texts_are_complete_and_mainland(self):
         import string
@@ -205,7 +200,7 @@ class Language(unittest.TestCase):
                 self.assertEqual(set(hans), set(zh), name)
             for h, z in zip(texts(hans), texts(zh)):
                 self.assertEqual(fields(h), fields(z), f"{name}: placeholders must survive: {h[:40]}")
-                found = [w for w in self.TW_USAGE if w in h]
+                found = [w for w in mainland_usage.TW_USAGE if w in h]
                 self.assertEqual(found, [], f"{name}: {h[:60]}")
         lang = i18n.Lang({"user": {"language": "zh-CN"}})
         self.assertEqual((lang.family, lang.t("answer_to_me"), lang.detail("medium"), lang.speaker("其他人", "A"),

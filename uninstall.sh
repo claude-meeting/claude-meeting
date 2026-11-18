@@ -88,7 +88,7 @@ echo "  Your meetings in ~/meetings are untouched."
 [ "$PURGE" = 1 ] || echo "  Config, models and the Python environment are kept; run with --purge to remove them."
 echo "  Still to do by hand, if you used the Mac app:"
 echo "   - move claude-meeting.app out of Applications (or ~/Applications)"
-echo "   - System Settings > General > Login Items: remove claude-meeting"
+echo "   - System Settings > General > Login Items & Extensions: remove claude-meeting"
 case "$ROOT" in "$SUPPORT"/*) [ "$PURGE" = 1 ] && echo "   - this folder itself: \"$SUPPORT\"" ;; esac
 echo "  Kept: uv's own Python (~/.local/share/uv, ~/.cache/uv) and Minutes with its models (~/.minutes);"
 echo "  remove them yourself if you no longer want them."

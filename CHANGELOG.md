@@ -2,6 +2,15 @@
 
 The project's public history starts here, with its first public release.
 
+## v0.1.19 (2026-11-18)
+
+- **Simplified Chinese documentation**: `README.zh-CN.md` and `docs/configuration.zh-CN.md`, with screenshots and a
+  demo taken in Simplified Chinese macOS.
+- **The app's Simplified Chinese reads as mainland Chinese**: 实时笔记 (not 即时笔记), 会应用到, 按声音; the engine's
+  Simplified prompts lose Taiwan-style wording too.
+- **macOS 15's name for Login Items** in the setup guide, the READMEs and the uninstaller: Login Items & Extensions
+  (登入項目與延伸功能, 登录项与扩展).
+
 ## v0.1.18 (2026-11-18)
 
 Fixes from the first reports (claude-meeting/claude-meeting #1–#5):

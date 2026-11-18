@@ -1,8 +1,6 @@
 # claude-meeting
 
-[繁體中文](README.zh-TW.md)
-
-*claude-meeting is an independent project. It is not made by, endorsed by or affiliated with Anthropic. Claude is a trademark of Anthropic.*
+[繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md)
 
 **A meeting assistant for your Mac.** Join a call in any app and it starts recording by itself. It
 transcribes the call live on your Mac and notes the to-dos, decisions and deadlines. When someone asks
@@ -152,7 +150,7 @@ Copilot*; the new app moves the old one to the Trash and tells you.
 
 That stops the background service and moves the speech models, the settings and the voiceprint recording to the
 Trash. Then drag claude-meeting from Applications to the Trash and remove it from System Settings → General →
-Login Items. Your meetings in `~/meetings` are never touched, and Minutes stays installed (remove it yourself if
+Login Items & Extensions. Your meetings in `~/meetings` are never touched, and Minutes stays installed (remove it yourself if
 you no longer want it).
 
 ## For developers

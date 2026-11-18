@@ -1,6 +1,6 @@
 # 進階設定
 
-[English](configuration.md) · [回到說明](../README.zh-TW.md)
+[English](configuration.md) · [简体中文](configuration.zh-CN.md) · [回到說明](../README.zh-TW.md)
 
 大部分人只需要 App 的設定視窗（選單列圖示 →「設定…」）。這一頁是其他所有設定。
 

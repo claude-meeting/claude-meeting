@@ -167,7 +167,7 @@ public enum L {
         "setup_login": ("開機時啟動", "Open at login"),
         "setup_login_detail": ("登入 Mac 時自動開啟 claude-meeting。", "Open claude-meeting when you log in."),
         "setup_login_toggle": ("開機時啟動", "Open at login"),
-        "setup_login_approval": ("macOS 需要你在「登入項目」允許一次。", "macOS needs you to allow it once under Login Items."),
+        "setup_login_approval": ("macOS 需要你在「登入項目與延伸功能」允許一次。", "macOS needs you to allow it once under Login Items & Extensions."),
         "setup_login_translocated": ("請先把 App 放進「應用程式」再開啟一次，才能設定開機啟動。", "Move the app to Applications and open it again before enabling this."),
         "people_name_taken": ("已經有這個名字的人了。", "Someone with that name already exists."),
         "setup_ready": ("都準備好了", "All set"),

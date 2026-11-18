@@ -1,6 +1,6 @@
 # Settings in detail
 
-[繁體中文](configuration.zh-TW.md) · [Back to the README](../README.md)
+[繁體中文](configuration.zh-TW.md) · [简体中文](configuration.zh-CN.md) · [Back to the README](../README.md)
 
 Most people only need the app's Settings window (menu bar icon → Settings…). This page is for everything else.
 

@@ -5,7 +5,7 @@ Nothing here comes from a real meeting: the people, the show and every line are 
 pointed at a stand-in engine folder (MEETING_COPILOT_ENGINE) that only looks installed; this script writes
 the status, live notes and notifications the real engine would, at the pace of a meeting.
 
-  scripts/demo-meeting.py ~/demo --lang zh-TW        # or en; --speed 3 plays three times faster
+  scripts/demo-meeting.py ~/demo --lang zh-TW        # or zh-CN, en; --speed 3 plays three times faster
   MEETING_COPILOT_ENGINE=~/demo/app /Applications/claude-meeting.app/Contents/MacOS/MeetingCopilot --show-notes
 
 Quit claude-meeting first: a second copy of the same version hands over to the running one and quits, which
@@ -27,12 +27,16 @@ STR = {
            "item_deadline": "⏰ 期限", "item_my_todo": "✅ 我的待辦", "item_other_todo": "✅ 待辦", "item_risk": "⚠️ 風險",
            "answer_heading": "💡", "answer_to_me": "❓ 問我", "speaker_named": "👤 {who} 是 {name}",
            "colon": "：", "title_sep": "｜"},
+    "zh-hans": {"notes_title": "# {title}（实时笔记）\n\n开始：{start}\n\n", "item_decision": "📌 决策",
+                "item_deadline": "⏰ 期限", "item_my_todo": "✅ 我的待办", "item_other_todo": "✅ 待办", "item_risk": "⚠️ 风险",
+                "answer_heading": "💡", "answer_to_me": "❓ 问我", "speaker_named": "👤 {who} 是 {name}",
+                "colon": "：", "title_sep": "｜"},
     "en": {"notes_title": "# {title} (live notes)\n\nStarted: {start}\n\n", "item_decision": "📌 Decision",
            "item_deadline": "⏰ Deadline", "item_my_todo": "✅ My to-do", "item_other_todo": "✅ To-do", "item_risk": "⚠️ Risk",
            "answer_heading": "💡", "answer_to_me": "❓ Asked me", "speaker_named": "👤 {who} is {name}",
            "colon": ": ", "title_sep": " · "},
 }
-VERIFY = {"zh": "🔎 查證補充", "en": "🔎 Checked"}
+VERIFY = {"zh": "🔎 查證補充", "zh-hans": "🔎 查证补充", "en": "🔎 Checked"}
 
 # (seconds after the previous event, what, text). "line": transcript "who｜words"; "items": note items;
 # "ask": a streamed instant answer (question, answer); "check": the web check under it; "name": a speaker named.
@@ -65,6 +69,37 @@ ZH = {
                       ("item_risk", "來賓若要求刪改段落，上架可能延到週三")]),
         (4, "line", "Rowan｜授權那邊我下午再寄信催一次"),
         (3, "line", "其他人 A｜那今天先這樣，辛苦了"),
+    ],
+}
+ZH_HANS = {  # ZH in Simplified Chinese: from i18n.to_hans, then edited by hand for mainland usage (音频, 标准化...)
+    "title": "Podcast 新一集制作会议",
+    "me": "我", "others": "其他人",
+    "events": [
+        (1, "line", "其他人 A｜好，我们开始吧，今天来排下一集 podcast 的制作进度"),
+        (3, "line", "我｜在，耳机麦克风正常"),
+        (4, "line", "其他人 A｜上周录的那段访谈，音频整理得怎么样？"),
+        (4, "line", "其他人 B｜杂音都清掉了，只剩嘉宾那边有一点回音"),
+        (3, "name", "其他人 B｜Rowan"),
+        (4, "line", "其他人 A｜那粗剪可以在周二给嘉宾听吗？"),
+        (4, "line", "Rowan｜可以，不过片头音乐的授权还没回信"),
+        (4, "line", "其他人 A｜这集音量我想统一压在 -16 LUFS 左右"),
+        (2, "ask", ("什么是 LUFS",
+                    "响度单位：按人耳感受测量整段音频的平均音量，数字越接近 0 越大声。各平台会把节目拉到相近的响度，换下一集时音量才不会忽大忽小。")),
+        (3, "check", "Apple Podcasts 建议节目响度约 -16 LUFS（±1 dB）；Spotify 播放时默认把音量标准化到约 -14 LUFS。"),
+        (3, "line", "其他人 A｜混音你那边周五前来得及交吗？下周一早上要上架"),
+        (2, "ask_me", ("混音周五前来得及交吗",
+                    "可以回复：来得及。周四先把对白和配乐混好，周五中午前交成品文件；若片头音乐授权还没下来，先用免版税的备用曲。")),
+        (5, "line", "我｜来得及，我周五中午前交，片头先放备用曲"),
+        (3, "line", "其他人 A｜好，那就下周一早上八点上架，周二先给嘉宾听粗剪"),
+        (3, "items", [
+            ("item_decision", "下周一早上八点上架，片头授权没下来就先用备用曲"),
+            ("item_deadline", "周二前把粗剪给嘉宾听"),
+            ("item_my_todo", "周五中午前交混音成品文件，响度压在 -16 LUFS"),
+            ("item_other_todo", "Rowan：追片头音乐的授权回信"),
+            ("item_risk", "嘉宾若要求删改段落，上架可能延到周三"),
+        ]),
+        (4, "line", "Rowan｜授权那边我下午再发邮件催一次"),
+        (3, "line", "其他人 A｜那今天先这样，辛苦了"),
     ],
 }
 EN = {
@@ -104,13 +139,14 @@ EN = {
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("home", type=Path, help="folder for the stand-in engine and the demo meetings")
-    ap.add_argument("--lang", choices=["zh-TW", "en"], default="zh-TW")
+    ap.add_argument("--lang", choices=["zh-TW", "zh-CN", "en"], default="zh-TW")
     ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--hold", type=float, default=600, help="seconds to keep the meeting 'recording' at the end")
     a = ap.parse_args()
-    demo = ZH if a.lang == "zh-TW" else EN
-    zh = a.lang == "zh-TW"
-    t = STR["zh" if zh else "en"]
+    family = {"zh-TW": "zh", "zh-CN": "zh-hans", "en": "en"}[a.lang]
+    demo = {"zh": ZH, "zh-hans": ZH_HANS, "en": EN}[family]
+    zh = family != "en"
+    t = STR[family]
 
     app = a.home.expanduser().resolve() / "app"
     state, live = app / "state", a.home.expanduser().resolve() / "meetings" / "live"
@@ -135,7 +171,7 @@ def main():
     def status(recording=True):
         s = {"recording": recording, "title": demo["title"], "started_at": started, "auto": True,
              "notes": str(notes) if recording else "", "meetings_dir": str(live.parent),
-             "language": "zh" if zh else "en", "open_viewer": True, "problems": [], "updated": time.time()}
+             "language": family, "open_viewer": True, "problems": [], "updated": time.time()}
         tmp = state / "status.json.tmp"
         tmp.write_text(json.dumps(s, ensure_ascii=False))
         os.replace(tmp, state / "status.json")
@@ -176,7 +212,7 @@ def main():
             write("\n\n")
             notify(f"{label} {question}", answer)
         elif kind == "check":
-            label = VERIFY["zh" if zh else "en"]
+            label = VERIFY[family]
             write(f"  {label}（{question[:20]}）：{payload}\n" if zh else f"  {label} ({question[:20]}): {payload}\n")
             notify(f"{label}：{question[:30]}" if zh else f"{label}: {question[:30]}", payload)   # as realtime._verify
         elif kind == "items":
