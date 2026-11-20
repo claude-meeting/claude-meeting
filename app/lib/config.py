@@ -60,6 +60,17 @@ def tool(name, default):
     return str(default)
 
 
+def voiceprint_path(cfg):
+    """Where the user's voiceprint is kept (recorded by the Mac app, or by tools/enroll_voiceprint.py)."""
+    return Path(cfg.get("voice", {}).get("voiceprint_file") or "~/.config/meeting-copilot/voiceprint.json").expanduser()
+
+
+def voiceprint_file(cfg):
+    """The user's voiceprint when verification is on and the user has enrolled, else None."""
+    path = voiceprint_path(cfg)
+    return path if cfg.get("voice", {}).get("verify", True) and path.exists() else None
+
+
 def meetings_dir(cfg):
     return expand(cfg.get("paths", {}).get("meetings_dir") or "~/meetings")
 

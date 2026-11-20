@@ -73,13 +73,14 @@ class OnlineSpeakers:
             k = self.alias[k]
         return k
 
-    def assign(self, audio, sample_rate=16000, start=None, end=None):
+    def assign(self, audio, sample_rate=16000, start=None, end=None, vector=None):
         """Speaker index for one utterance, or None when it is too short to tell. `start`/`end` (seconds into the
-        track) let check_turn() follow the turn this utterance belongs to."""
+        track) let check_turn() follow the turn this utterance belongs to. `vector`: its embedding, when the caller
+        already has it (room mode scored it against the user's voiceprint)."""
         self.last_vector = None
         if len(audio) < MIN_SECS * sample_rate:
             return None
-        v = self.vp.embed(audio)
+        v = self.vp.embed(audio) if vector is None else vector
         self.last_vector = v
         live = [k for k in range(len(self.centroids)) if k not in self.alias]
         before = None
@@ -400,6 +401,17 @@ def line_vectors(transcript):
 def names_path(transcript):
     """Names given to this meeting's speakers ({"A": "毛毛蟲"}), next to the live transcript."""
     return Path(str(transcript).replace(".jsonl", ".names.json"))
+
+
+def mode_path(transcript):
+    """The recording's mode next to its transcript: "call" or "room" on the first line, "user" on the second when
+    the user chose it (bin/autopilot.py RecordingMode, read by bin/live_transcriber.py)."""
+    return Path(transcript).with_suffix(".mode")
+
+
+def open_mode(transcript):
+    """The mode file, opened for reading as text (undecodable bytes replaced, so they read as an unknown mode)."""
+    return open(mode_path(transcript), encoding="utf-8", errors="replace")
 
 
 def speakers_path(transcript):

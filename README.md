@@ -87,6 +87,15 @@ recording, earlier meetings, the people it remembers, settings.
 Everything is kept in `~/meetings`: the live notes in `~/meetings/live/`, and the transcript and summary Minutes
 writes once the call ends.
 
+### In-person meetings and phones on speaker
+
+With no call app, the Mac's microphone is the whole room: an in-person meeting, or a phone call on speaker next to
+the Mac. Choose *Start recording* in the menu: with no call on and your voiceprint recorded, claude-meeting records in
+**room mode**, keeps every voice it hears and tells them apart as Others A, B, C; your voiceprint marks which lines
+are yours (without one, record it first or choose room mode in the menu: every voice then counts as someone else). Name the speakers in the notes window (*Speakers*) and they are recognised next time. The menu shows the
+mode and switches it; Settings sets what *Start recording* picks. Telling voices apart from one microphone is
+harder than on a call: people far from the Mac, talking over each other, or a loud room can be grouped wrongly.
+
 ## Privacy
 
 **What stays on your Mac.** Audio, screenshots, transcripts and notes, in `~/meetings` (Minutes keeps its own

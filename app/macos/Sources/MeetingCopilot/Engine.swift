@@ -148,11 +148,14 @@ final class Engine: ObservableObject {
         try? bundleVersion.write(to: supportEngine.appendingPathComponent(".version"), atomically: true, encoding: .utf8)
     }
 
-    func send(_ cmd: String) {
+    func send(_ cmd: String, _ extra: [String: String] = [:]) {
         let dir = stateDir.appendingPathComponent("commands")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let name = "\(Int(Date().timeIntervalSince1970 * 1000))-\(cmd).json"
-        try? #"{"cmd": "\#(cmd)"}"#.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        var body = extra
+        body["cmd"] = cmd
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
+        try? data.write(to: dir.appendingPathComponent(name), options: .atomic)
     }
 
     /// The live notes of the meeting in progress, or the latest one.

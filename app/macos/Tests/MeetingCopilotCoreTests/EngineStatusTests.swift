@@ -89,6 +89,13 @@ final class EngineStatusTests: XCTestCase {
         XCTAssertNotEqual(a, c)
     }
 
+    func testTheRecordingModeDecodes() throws {
+        // claude-meeting/claude-meeting#6: "call" or "room" while recording, empty otherwise (and from older engines).
+        XCTAssertEqual(try decode(#"{"recording": true, "mode": "room"}"#).mode, "room")
+        XCTAssertEqual(try decode(#"{"recording": true}"#).mode, "")
+        XCTAssertEqual(try decode(#"{"mode": 3}"#).mode, "")
+    }
+
     func testNonObjectFails() {
         XCTAssertThrowsError(try decode("[]"))
         XCTAssertThrowsError(try decode("not json"))

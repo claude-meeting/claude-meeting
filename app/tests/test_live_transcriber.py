@@ -293,5 +293,275 @@ class WholeProgram(unittest.TestCase):
         self.assertIn("idle too long", r.stderr)
 
 
+
+class RoomSpeaker(unittest.TestCase):
+    """Who said a microphone line in room mode (live_transcriber.room_speaker)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sb = Sandbox()
+        sys.path.insert(0, str(FAKES_PY))
+        sys.path.insert(0, str(APP / "bin"))
+        import live_transcriber
+        cls.lt = live_transcriber
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.sb.cleanup()
+
+    def voice(self, enrolled):
+        class Voice:
+            def __init__(self, v):
+                self.enrolled = np.array(v, dtype=np.float32)
+
+            def embed(self, audio):
+                return np.array([1.0, 0.0], dtype=np.float32) if audio.mean() > 0 else np.array([0.0, 1.0], dtype=np.float32)
+        return Voice(enrolled)
+
+    def test_the_voiceprint_decides_and_others_get_their_vector(self):
+        lt, me = self.lt, self.voice([1.0, 0.0])
+        loud, other = np.full(16000, 0.1, dtype=np.float32), np.full(16000, -0.1, dtype=np.float32)
+        self.assertEqual(lt.room_speaker(loud, me, 0.4, None)[:2][0], "我")
+        speaker, vector, keep, by_voice = lt.room_speaker(other, me, 0.4, None)
+        self.assertEqual((speaker, keep, by_voice), ("其他人", None, True))
+        self.assertIsNotNone(vector)                                            # embedded once, grouped with it
+
+    def test_a_short_line_goes_with_the_previous_one_on_the_microphone(self):
+        lt, me = self.lt, self.voice([1.0, 0.0])
+        short = np.full(4000, -0.1, dtype=np.float32)                           # 0.25 s: no score possible
+        # Nothing before it (or a pause of more than KEEP_GAP_SECS): no sign it is the user.
+        self.assertEqual(lt.room_speaker(short, me, 0.4, None), ("其他人", None, None, False))
+        self.assertEqual(lt.room_speaker(short, me, 0.4, "我"), ("我", None, None, False))
+        self.assertEqual(lt.room_speaker(short, me, 0.4, "B"), ("其他人", None, "B", False))
+        # After someone else's line that got no letter (too short to group, or grouping off): not the user.
+        self.assertEqual(lt.room_speaker(short, me, 0.4, "其他人"), ("其他人", None, None, False))
+
+    def test_someone_else_s_line_too_short_to_group_goes_with_the_previous_speaker(self):
+        # 0.5 to 1 s: the voiceprint can tell it is not the user, but it is too short to group by voice.
+        lt, me = self.lt, self.voice([1.0, 0.0])
+        line = np.full(12000, -0.1, dtype=np.float32)                           # 0.75 s
+        self.assertEqual(lt.room_speaker(line, me, 0.4, "B"), ("其他人", None, "B", True))
+        self.assertEqual(lt.room_speaker(line, me, 0.4, "我")[2], None)            # grouped (no letter) as usual
+        self.assertEqual(lt.room_speaker(np.full(12000, 0.1, dtype=np.float32), me, 0.4, "B")[:1], ("我",))
+
+    def test_short_lines_move_with_their_turn(self):
+        mic = self.lt.MicHistory()
+        for start, who in ((5.0, "B"), (12.0, "B"), (13.0, "C"), (20.0, "B")):
+            mic.line(start, start + 0.3, who, kept=True)
+        mic.line(14.0, 16.0, "B")                                               # has its own letter
+        self.assertEqual(mic.split("B", "E", [10.0, 14.0, 16.0], 16.0), [10.0, 12.0, 14.0])
+        self.assertEqual(mic.kept, [(5.0, "B"), (12.0, "E"), (13.0, "C"), (20.0, "B")])
+        self.assertEqual(mic.previous(16.5), "E")                                # the last line moved too
+        for i in range(60):
+            mic.line(100.0 + i, 100.5 + i, "B", kept=True)
+        self.assertEqual(len(mic.kept), mic.KEPT_MAX)
+
+    def test_a_wall_clock_time_maps_to_the_track_second_read_then(self):
+        from array import array
+        f = self.lt.TrackFollower.__new__(self.lt.TrackFollower)
+        f.anchor_samples, f.anchor_times, f.samples_read = array("q", [16000, 32000]), array("d", [100.0, 101.0]), 32000
+        self.assertAlmostEqual(f.seconds_at(100.5), 1.5)
+        self.assertEqual(f.seconds_at(50.0), 0.0)
+        self.assertEqual(f.seconds_at(200.0), 2.0)                               # after the last read: what was read
+        f.anchor_samples, f.anchor_times = array("q", [48000, 64000]), array("d", [99.0, 103.0])   # a stall
+        self.assertEqual(f.seconds_at(100.0), 3.0)                               # not before what was read at 99
+
+    def test_the_previous_line_counts_only_if_it_was_just_said(self):
+        mic = self.lt.MicHistory()
+        self.assertIsNone(mic.previous(1.0))
+        mic.line(1.0, 3.0, "B")
+        self.assertEqual(mic.previous(4.0), "B")
+        self.assertIsNone(mic.previous(3.0 + self.lt.KEEP_GAP_SECS + 1))
+
+    def test_a_restart_rebuilds_the_microphone_lines_from_the_transcript(self):
+        mic = self.lt.MicHistory()
+        for row in [{"start": 1.0, "end": 3.0, "speaker": "我", "track": "voice"},
+                    {"start": 3.5, "end": 3.8, "speaker": "其他人", "who": "B", "track": "voice", "kept": True},
+                    {"start": 4.0, "end": 6.0, "speaker": "其他人", "who": "B", "track": "voice"},
+                    {"start": 6.0, "end": 9.0, "speaker": "其他人", "who": "C", "track": "system"},
+                    {"relabel": {"from": "B", "to": "E", "starts": [3.5, 4.0]}}]:
+            mic.add(row)
+        self.assertEqual((mic.start, mic.who, mic.kept), (4.0, "E", [(3.5, "E")]))
+        mic.add({"start": 7.0, "end": 8.0, "speaker": "其他人", "track": "voice"})
+        self.assertEqual(mic.previous(8.5), "其他人")
+
+    def test_a_room_waits_for_the_call_track_only_in_a_recording_with_a_call(self):
+        lt = self.lt
+
+        from array import array
+        per_sec = 16000 / lt.VAD_CHUNK
+
+        class Call:
+            def __init__(self, loud_secs, written_ago, quiet_after=0):
+                self.chunk_rms = array("f", [0.1] * int(loud_secs * per_sec) + [0.0] * int(quiet_after * per_sec))
+                self.last_growth = 100.0 - written_ago
+
+        self.assertFalse(lt.room_waits_for_call(Call(0, 0, 600), 100.0))       # in person, a phone on speaker
+        self.assertFalse(lt.room_waits_for_call(Call(2, 0), 100.0))            # a few notification sounds
+        self.assertTrue(lt.room_waits_for_call(Call(30, 0), 100.0))            # a call
+        self.assertTrue(lt.room_waits_for_call(Call(30, 5, 60), 100.0))        # a pause in it
+        self.assertFalse(lt.room_waits_for_call(Call(30, lt.CALL_GONE_SECS + 1), 100.0))  # its track stopped
+        self.assertFalse(lt.room_waits_for_call(Call(30, 0, lt.CALL_WINDOW_SECS), 100.0))  # long ago: sounds add up
+        self.assertTrue(lt.room_waits_for_call(Call(30, 0, lt.CALL_WINDOW_SECS - 6), 100.0))  # 6 s still in the window
+
+    def test_every_switch_applies_to_what_was_said_after_it(self):
+        import os
+        lt = self.lt
+
+        class Mic:
+            def seconds_at(self, wall):
+                return wall - 1000.0                                             # the track began at 1000
+
+        out = self.sb.root / "switch.jsonl"
+        mode_file = out.with_suffix(".mode")
+
+        def write(mode, at):
+            mode_file.write_text(mode + "\n")
+            os.utime(mode_file, (at, at))
+
+        write("call", 1000.0)
+        watch = lt.ModeWatch(out, Mic())
+        watch.check()
+        write("room", 1010.0)
+        watch.check()                                                            # the main loop sees it
+        write("call", 1015.0)                                                    # and back, before any line
+        self.assertEqual(watch.at(5.0), "call")
+        self.assertEqual(watch.at(12.0), "room")                                 # said during the room
+        self.assertEqual(watch.at(16.0), "call")
+        self.assertEqual(lt.ModeWatch(self.sb.root / "none.jsonl", Mic()).at(1.0), "call")
+        write("room", 1018.0)
+        self.assertEqual(watch.at(19.0), "room")
+        mode_file.write_bytes(b"\xff\xfe")                                      # not text: an unknown mode, a call
+        os.utime(mode_file, (1020.0, 1020.0))
+        self.assertEqual(watch.at(21.0), "call")
+        self.assertEqual(lt.read_mode(out), "call")                             # at startup too
+
+    def test_a_resumed_call_track_knows_its_levels_before_the_resume_point(self):
+        lt = self.lt
+        sys.path.insert(0, str(APP / "lib"))
+        import asr
+        pcm = np.concatenate([np.full(16000 * 6, 3000, dtype="<i2"), np.zeros(16000 * 2, dtype="<i2")])
+        path = self.sb.root / "scan.system.wav"
+        path.write_bytes(lt.HEADER_BYTES * b"\0" + pcm.tobytes() + b"\0")            # an odd byte mid-write
+
+        def scanned(resume_secs):
+            f = lt.TrackFollower.__new__(lt.TrackFollower)
+            f.path, f.SCAN_BLOCK = str(path), lt.VAD_CHUNK * 7                  # several blocks
+            f.samples_read = int(resume_secs * 16000) // lt.VAD_CHUNK * lt.VAD_CHUNK
+            f.scan()
+            return f
+
+        f = scanned(8)
+        self.assertEqual((f.base_chunk, len(f.chunk_rms)), (0, f.samples_read // lt.VAD_CHUNK))
+        self.assertAlmostEqual(f.chunk_rms[3], asr.rms(pcm[3 * 512:4 * 512].astype(np.float32) / 32768), places=5)
+        self.assertGreater(f.rms_between(1.0, 3.0), 0.05)                       # the call, before the resume point
+        self.assertEqual(f.rms_between(6.5, 7.5), 0.0)
+        self.assertAlmostEqual(f.last_growth, path.stat().st_mtime, places=3)
+        f = scanned(18)                                                          # a stem shorter than the resume point
+        self.assertEqual(len(f.chunk_rms), f.samples_read // lt.VAD_CHUNK)
+        self.assertGreater(f.rms_between(4.0, 5.0), 0.05)                       # levels stay where they were said
+        self.assertEqual(f.rms_between(12.0, 14.0), 0.0)
+
+    def test_without_a_voiceprint_everyone_is_someone_else(self):
+        self.assertEqual(self.lt.room_speaker(np.zeros(16000, dtype=np.float32), None, 0.4, "我"),
+                         ("其他人", None, None, False))
+
+
+class RoomMode(unittest.TestCase):
+    """claude-meeting/claude-meeting#6: an in-person meeting or a phone on speaker. Everyone is on the microphone;
+    in room mode the voices other than the user's are kept and grouped, where call mode drops them."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sb = Sandbox(extra='[asr]\nprimary_model = "fake/primary"\nfallback_model = "fake/fallback"\n')
+        cls.sb.cache_models("fake/primary", "fake/fallback")
+        cls.speech = synth_speech(cls.sb.root / "speech.wav")
+        cls.env = {**cls.sb.env, "PYTHONPATH": str(FAKES_PY), "MC_FAKE_ASR_LOG": str(cls.sb.fake / "asr.log")}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.sb.cleanup()
+
+    def setUp(self):
+        if not self.speech:
+            self.skipTest("macOS `say` is not available")
+        self.sb.minutes(recording=False)
+
+    def run_room(self, name, mode, voiceprint=None, voice_level=0.2, system_level=0.0):
+        """The speech on the microphone (quiet, as someone across the table); the call's audio silent, or with
+        the same speech at `system_level`."""
+        import soundfile as sf
+        audio, _ = sf.read(self.speech, dtype="int16")
+        base = self.sb.root / name
+        Path(f"{base}.voice.wav").write_bytes(header() + (audio.astype(np.float32) * voice_level).astype("<i2").tobytes())
+        Path(f"{base}.system.wav").write_bytes(header() + (audio.astype(np.float32) * system_level).astype("<i2").tobytes())
+        out = self.sb.root / f"{name}.jsonl"
+        if mode:
+            out.with_suffix(".mode").write_text(mode)
+        vp = self.sb.home / ".config" / "meeting-copilot" / "voiceprint.json"      # where the engine looks
+        vp.unlink(missing_ok=True)
+        if voiceprint is not None:
+            vp.write_text(json.dumps({"model": "fake", "vector": list(voiceprint)}))
+        r = subprocess.run([sys.executable, str(APP / "bin" / "live_transcriber.py"), f"{base}.wav", str(out)],
+                           env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        rows = [json.loads(l) for l in out.read_text().splitlines()] if out.exists() else []
+        return [x for x in rows if "speaker" in x], r.stderr
+
+    def speech_vector(self, level=0.2):
+        """The fake speaker model's vector of this speech at this level: a voiceprint that matches it."""
+        import soundfile as sf
+        sys.path.insert(0, str(FAKES_PY))
+        import sherpa_onnx
+        audio, _ = sf.read(self.speech, dtype="float32")
+        stream = sherpa_onnx.SpeakerEmbeddingExtractor(None).create_stream()
+        stream.accept_waveform(16000, audio * level)
+        v = np.array(sherpa_onnx.SpeakerEmbeddingExtractor(None).compute(stream))
+        return v / np.linalg.norm(v)
+
+    def test_call_mode_drops_a_voice_that_is_not_the_user(self):
+        rows, log = self.run_room("c1", None, voiceprint=[0.0, 0.0, 1.0, 0.0])
+        self.assertEqual(rows, [])
+        self.assertIn("mode: call", log)
+        self.assertIn("dropped (voiceprint", log)
+
+    def test_room_mode_keeps_and_groups_a_voice_that_is_not_the_user(self):
+        rows, log = self.run_room("r1", "room", voiceprint=[0.0, 0.0, 1.0, 0.0])
+        self.assertIn("mode: room", log)
+        self.assertTrue(rows, log[-2000:])
+        self.assertTrue(all(x["speaker"] == "其他人" and x["track"] == "voice" for x in rows), rows)
+        self.assertTrue(all(x.get("who") for x in rows), rows)                # grouped: A, B, ...
+        self.assertTrue((self.sb.root / "r1.speakers.json").exists())
+
+    def test_room_mode_still_knows_the_user_by_voice(self):
+        rows, log = self.run_room("r2", "room", voiceprint=self.speech_vector())
+        self.assertTrue(rows, log[-2000:])
+        self.assertTrue(all(x["speaker"] == "我" and not x.get("who") for x in rows), rows)
+
+    def test_in_a_room_the_user_s_voice_is_kept_over_a_loud_call(self):
+        # A room with others on a call: the user talking while the call is loud is not call echo (voiceprint first,
+        # as in call mode); someone else that quiet under the call is.
+        rows, log = self.run_room("r5", "room", voiceprint=self.speech_vector(), system_level=1.0)
+        mic = [x for x in rows if x["track"] == "voice"]
+        self.assertTrue(mic and all(x["speaker"] == "我" for x in mic), log[-2000:])
+        self.assertNotIn("call echo, room", log)
+        rows, log = self.run_room("r6", "room", voiceprint=[0.0, 0.0, 1.0, 0.0], system_level=1.0)
+        self.assertIn("call echo, room", log)
+
+    def test_room_mode_without_a_voiceprint_counts_everyone_as_others(self):
+        rows, log = self.run_room("r3", "room", voiceprint=None)
+        self.assertIn("room mode without the user's voiceprint", log)
+        self.assertTrue(rows and all(x["speaker"] == "其他人" for x in rows), rows)
+
+    def test_a_resumed_room_transcript_continues_each_track(self):
+        rows, _ = self.run_room("r4", "room", voiceprint=[0.0, 0.0, 1.0, 0.0])
+        n = len(rows)
+        out = self.sb.root / "r4.jsonl"
+        r = subprocess.run([sys.executable, str(APP / "bin" / "live_transcriber.py"), f"{self.sb.root / 'r4'}.wav",
+                            str(out)], env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        self.assertEqual(len([l for l in out.read_text().splitlines() if '"speaker"' in l]), n)   # no duplicates
+
+
 if __name__ == "__main__":
     unittest.main()

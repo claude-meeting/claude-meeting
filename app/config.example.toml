@@ -19,6 +19,9 @@ cooldown_secs = 20
 call_audio_lost_secs = 120  # the call's audio recorded as silence this long, with nothing transcribed: restart
 call_audio_restarts = 1     # restarts per call; after that only a notification (0: never restart)
 ignore_apps = []          # extra bundle-id prefixes that never count as a call
+manual_mode = "auto"      # a recording started from the menu: "auto" (room mode when there is no call and your
+                          # voiceprint is recorded, with [voice] verify on), "room" (an in-person meeting, or a phone on speaker: every voice on the
+                          # microphone is kept and told apart) or "call" (the microphone is you)
 
 [llm]                     # which model writes the notes and the answers
 provider = "claude"       # "claude": your own Claude subscription, through Claude Code (signed in with your account)

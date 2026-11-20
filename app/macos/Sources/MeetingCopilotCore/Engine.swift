@@ -16,6 +16,8 @@ public struct EngineStatus: Decodable, Equatable {
     /// The speech model the current language needs but install.sh has not fetched (empty when all is there).
     public var asr_missing = ""
     public var problems: [String] = []
+    /// "call" or "room" while recording (bin/autopilot.py RecordingMode), else empty.
+    public var mode = ""
     public var updated: Double = 0
 
     public init() {}
@@ -38,12 +40,13 @@ public struct EngineStatus: Decodable, Equatable {
         open_viewer = get(.open_viewer, true)
         asr_missing = get(.asr_missing, "")
         problems = get(.problems, [])
+        mode = get(.mode, "")
         updated = get(.updated, 0)
     }
 
     private enum Key: String, CodingKey {
         case recording, title, started_at, auto, manual, paused, processing, notes, meetings_dir, language,
-             open_viewer, asr_missing, problems, updated
+             open_viewer, asr_missing, problems, updated, mode
     }
 }
 

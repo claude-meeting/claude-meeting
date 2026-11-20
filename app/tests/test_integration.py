@@ -118,6 +118,234 @@ class AppCommands(unittest.TestCase):
         self.assertEqual(len(missing), 1, self.sb.notifications())
         self.assertIn(outcomes.problem(), self.sb.status()["problems"])
 
+    def voiceprint(self):
+        """The user has recorded a voiceprint: what tells the user apart in a room."""
+        vp = self.sb.home / ".config" / "meeting-copilot" / "voiceprint.json"
+        vp.parent.mkdir(parents=True, exist_ok=True)
+        vp.write_text("{}")
+
+    def mode_file(self):
+        path = self.ap.LIVE_ASR.path
+        return path.with_suffix(".mode").read_text() if path and path.with_suffix(".mode").exists() else None
+
+    def test_a_recording_started_from_the_app_with_no_call_is_the_room(self):
+        # claude-meeting/claude-meeting#6: an in-person meeting, or a phone on speaker next to the Mac.
+        self.voiceprint()
+        self.sb.command("start")
+        self.sb.run_main(self.ap, loops=4, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "room")
+        self.assertEqual(self.mode_file().splitlines()[0], "room")      # what the transcriber reads
+
+    def test_a_recording_started_from_the_app_during_a_call_is_the_call(self):
+        self.sb.mic_users("com.google.Chrome.helper")
+        self.sb.command("start")
+        self.sb.run_main(self.ap, loops=4, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "call")
+
+    def test_without_a_voiceprint_a_recording_started_from_the_app_is_a_call(self):
+        # In a room nothing else tells the user apart: every line, theirs too, would be someone else's.
+        self.sb.command("start")
+        self.sb.run_main(self.ap, loops=4, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "call")
+
+    def test_a_room_the_user_chose_does_not_end_when_a_call_app_lets_the_mic_go(self):
+        self.voiceprint()
+        self.sb.command("start")
+        self.clock.at(2, lambda: self.sb.command("mode", mode="room"))
+        self.clock.at(3, lambda: self.sb.mic_users("com.google.Chrome.helper"))    # a tab takes the mic a moment
+        self.clock.at(5, self.sb.mic_users)
+        self.sb.run_main(self.ap, loops=16, clock=self.clock)
+        self.assertTrue(self.sb.status()["recording"])
+        self.assertEqual([a for n, a in self.sb.calls("minutes") if a[0] == "stop"], [])
+
+    def test_a_room_set_in_settings_goes_on_when_a_call_app_lets_the_mic_go(self):
+        self.ap.CFG["autopilot"]["manual_mode"] = "room"
+        try:
+            self.sb.command("start")
+            self.clock.at(3, lambda: self.sb.mic_users("us.zoom.xos"))
+            self.clock.at(5, self.sb.mic_users)
+            # Switched to a call long after Zoom let the mic go (about to dial in): not stopped, then or later,
+            # until a call is seen and ends.
+            self.clock.at(16, lambda: self.sb.command("mode", mode="call"))
+            before_the_call = []
+            self.clock.at(29, lambda: before_the_call.append(
+                ([a for n, a in self.sb.calls("minutes") if a[0] == "stop"], self.sb.status()["mode"])))
+            self.clock.at(30, lambda: self.sb.mic_users("us.zoom.xos"))
+            self.clock.at(34, self.sb.mic_users)
+            self.sb.run_main(self.ap, loops=48, clock=self.clock)
+            self.assertEqual(before_the_call, [([], "call")])           # switched, not stopped by it
+            stops = [a for n, a in self.sb.calls("minutes") if a[0] == "stop"]
+            self.assertEqual(len(stops), 1)                              # by the call that came after the switch
+            self.assertIn("the call of a recording started from the app ended", self.sb.log())
+        finally:
+            self.ap.CFG["autopilot"]["manual_mode"] = "auto"
+
+    def test_a_call_the_user_switched_to_the_room_goes_on_when_the_call_ends(self):
+        # Auto-started for a Zoom call; people in the room too, so the user switched to room mode.
+        self.sb.mic_users("us.zoom.xos")
+        self.sb.run_main(self.ap, loops=6, clock=self.clock)
+        self.assertTrue(self.sb.status()["recording"])
+        self.sb.command("mode", mode="room")
+        self.sb.run_main(self.ap, loops=2, clock=self.clock)
+        self.sb.mic_users()                                              # the remote side hung up
+        self.sb.run_main(self.ap, loops=14, clock=self.clock)
+        self.assertTrue(self.sb.status()["recording"])
+        self.assertEqual([a for n, a in self.sb.calls("minutes") if a[0] == "stop"], [])
+
+    def test_a_recording_from_the_menu_during_a_call_switched_to_the_room_and_back_waits_for_a_new_call(self):
+        self.voiceprint()
+        self.sb.mic_users("us.zoom.xos")
+        self.sb.command("start")                                         # a call: call mode
+        self.clock.at(4, lambda: self.sb.command("mode", mode="room"))   # the in-person part
+        self.clock.at(6, self.sb.mic_users)                              # Zoom hung up
+        self.clock.at(20, lambda: self.sb.command("mode", mode="call"))
+        before = []
+        self.clock.at(33, lambda: before.append(
+            ([a for n, a in self.sb.calls("minutes") if a[0] == "stop"], self.sb.status()["mode"])))
+        self.clock.at(34, lambda: self.sb.mic_users("us.zoom.xos"))     # the next call
+        self.clock.at(38, self.sb.mic_users)
+        self.sb.run_main(self.ap, loops=50, clock=self.clock)
+        self.assertEqual(before, [([], "call")])                         # not stopped without a new call
+        self.assertEqual(len([a for n, a in self.sb.calls("minutes") if a[0] == "stop"]), 1)   # stopped after it
+
+    def test_a_call_switched_to_the_room_and_back_stops_a_wait_after_the_switch(self):
+        self.sb.mic_users("us.zoom.xos")
+        self.clock.at(8, lambda: self.sb.command("mode", mode="room"))
+        self.clock.at(10, self.sb.mic_users)                             # the remote side hung up
+        self.clock.at(30, lambda: self.sb.command("mode", mode="call"))   # the room is done too
+        at_the_switch = []
+        self.clock.at(32, lambda: at_the_switch.append(
+            [a for n, a in self.sb.calls("minutes") if a[0] == "stop"]))
+        self.sb.run_main(self.ap, loops=42, clock=self.clock)
+        self.assertEqual(at_the_switch, [[]])                            # not at once
+        self.assertEqual(len([a for n, a in self.sb.calls("minutes") if a[0] == "stop"]), 1)   # after the wait
+
+    def test_a_room_the_engine_chose_turns_into_a_call_when_a_call_app_takes_the_mic(self):
+        self.voiceprint()
+        self.sb.command("start")
+        self.clock.at(3, lambda: self.sb.mic_users("us.zoom.xos"))       # the user joins the call afterwards
+        self.sb.run_main(self.ap, loops=8, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "call")
+        self.assertEqual(self.mode_file().splitlines()[0], "call")
+        told = [n for n in self.sb.notifications() if self.ap.LANG.t("n_mode_call") in n[0]]
+        self.assertEqual(len(told), 1)
+
+    def test_a_room_the_user_chose_stays_one_and_the_app_can_switch_it(self):
+        self.sb.mic_users("us.zoom.xos")
+        self.sb.command("start")
+        self.clock.at(2, lambda: self.sb.command("mode", mode="room"))   # a room with others on a call
+        self.sb.run_main(self.ap, loops=8, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "room")
+        self.sb.command("mode", mode="call")
+        self.sb.run_main(self.ap, loops=2, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "call")
+        self.sb.command("mode", mode="nonsense")
+        self.sb.run_main(self.ap, loops=2, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "call")
+
+    def test_a_room_set_in_settings_stays_one_with_a_call_app(self):
+        # [autopilot] manual_mode = "room" is the user's choice: a call app on the mic does not turn it into a call.
+        self.ap.CFG["autopilot"]["manual_mode"] = "room"
+        try:
+            self.sb.mic_users("us.zoom.xos")
+            self.sb.command("start")
+            self.sb.run_main(self.ap, loops=8, clock=self.clock)
+            self.assertEqual(self.sb.status()["mode"], "room")
+            self.assertFalse([n for n in self.sb.notifications() if self.ap.LANG.t("n_mode_call") in n[0]])
+        finally:
+            self.ap.CFG["autopilot"]["manual_mode"] = "auto"
+
+    def test_the_setting_decides_for_recordings_started_from_the_app(self):
+        self.ap.CFG["autopilot"]["manual_mode"] = "call"
+        try:
+            self.sb.command("start")
+            self.sb.run_main(self.ap, loops=4, clock=self.clock)
+            self.assertEqual(self.sb.status()["mode"], "call")
+        finally:
+            self.ap.CFG["autopilot"]["manual_mode"] = "auto"
+
+    def test_a_recording_started_in_minutes_after_one_in_a_room_is_decided_afresh(self):
+        # The previous recording's room (chosen in the app) is not the next one's: a recording started in Minutes
+        # itself during a Zoom call is a call, with its own mode file.
+        self.sb.command("start")
+        self.clock.at(2, lambda: self.sb.command("mode", mode="room"))
+        self.clock.at(4, lambda: self.sb.command("stop"))
+        self.sb.run_main(self.ap, loops=8, clock=self.clock)
+        self.assertFalse(self.sb.status()["recording"])
+        first = self.ap.LIVE_ASR.path
+        self.sb.stems(False)
+        time.sleep(1.1)                                                  # a new stem file: a new recording
+        self.sb.mic_users("us.zoom.xos")
+        self.sb.minutes(recording=True)
+        self.sb.stems(True)
+        self.sb.run_main(self.ap, loops=3, clock=self.clock)
+        self.assertNotEqual(self.ap.LIVE_ASR.path, first)
+        self.assertEqual(self.sb.status()["mode"], "call")
+        self.assertEqual(self.mode_file(), "call\n")
+
+    def test_a_switch_in_the_app_while_the_engine_restarts_wins_over_the_mode_written_before(self):
+        # The engine restarted during a recording whose transcript says "call"; the user picked the room in the
+        # menu meanwhile. The engine's first pass handles that command before it finds the transcript again.
+        self.sb.minutes(recording=True)
+        self.sb.stems(True)
+        session = self.ap.LiveASR.current_session()
+        live = self.ap.LIVE_TRANSCRIPTS
+        live.mkdir(parents=True, exist_ok=True)
+        (live / f"{session}.mode").write_text("call\n")
+        self.sb.command("mode", mode="room")
+        self.sb.run_main(self.ap, loops=3, clock=self.clock)
+        self.assertEqual(self.ap.LIVE_ASR.session, session)
+        self.assertEqual(self.sb.status()["mode"], "room")
+        self.assertEqual(self.mode_file(), "room\nuser\n")
+
+    def test_a_recording_stopped_and_started_again_in_minutes_between_two_looks_is_decided_afresh(self):
+        self.sb.minutes(recording=True)
+        self.sb.stems(True)
+        self.sb.run_main(self.ap, loops=2, clock=self.clock)
+        self.sb.command("mode", mode="room")
+        self.sb.run_main(self.ap, loops=2, clock=self.clock)
+        self.assertEqual(self.mode_file(), "room\nuser\n")
+        first = self.ap.LIVE_ASR.path
+        self.sb.stems(False)
+        time.sleep(1.1)
+        self.sb.stems(True)                                              # a new recording, never seen stopped
+        self.sb.mic_users("us.zoom.xos")
+        self.sb.run_main(self.ap, loops=2, clock=self.clock)
+        self.assertNotEqual(self.ap.LIVE_ASR.path, first)
+        self.assertEqual(self.sb.status()["mode"], "call")
+        self.assertEqual(self.mode_file(), "call\n")
+        self.assertEqual(first.with_suffix(".mode").read_text(), "room\nuser\n")
+
+    def test_a_recording_reported_stopped_for_a_moment_keeps_its_mode_and_its_switches(self):
+        # Minutes' status said "not recording" once; the same recording, taken up again, still follows the menu.
+        self.voiceprint()
+        self.sb.command("start")
+        self.sb.run_main(self.ap, loops=4, clock=self.clock)
+        self.assertEqual(self.mode_file(), "room\n")
+        self.sb.minutes(recording=False)
+        self.sb.run_main(self.ap, loops=1, clock=self.clock)
+        self.sb.minutes(recording=True)
+        self.sb.run_main(self.ap, loops=2, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "room")
+        self.sb.command("mode", mode="call")
+        self.sb.run_main(self.ap, loops=2, clock=self.clock)
+        self.assertEqual(self.mode_file(), "call\nuser\n")
+
+    def test_a_switch_while_minutes_status_is_off_for_a_moment_is_not_lost(self):
+        self.voiceprint()
+        self.sb.command("start")
+        self.sb.run_main(self.ap, loops=4, clock=self.clock)
+        self.sb.minutes(recording=False)
+        self.sb.command("mode", mode="call")
+        self.sb.run_main(self.ap, loops=1, clock=self.clock)
+        self.sb.minutes(recording=True)
+        self.sb.run_main(self.ap, loops=2, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "call")
+
+    def test_no_mode_when_not_recording(self):
+        self.sb.run_main(self.ap, loops=2, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "")
+
     def test_a_recording_started_from_the_app_ends_with_its_call(self):
         # The user stopped and started again mid-call; when the call ends, the recording must end too.
         self.sb.mic_users("com.google.Chrome.helper")

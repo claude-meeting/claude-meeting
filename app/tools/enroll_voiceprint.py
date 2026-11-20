@@ -51,7 +51,7 @@ def speech(audio, call=None):
 
 def main():
     cfg = config.load()
-    default_out = cfg.get("voice", {}).get("voiceprint_file") or "~/.config/meeting-copilot/voiceprint.json"
+    default_out = str(config.voiceprint_path(cfg))
     ap = argparse.ArgumentParser()
     ap.add_argument("sources", nargs="+")
     ap.add_argument("--out", default=default_out)

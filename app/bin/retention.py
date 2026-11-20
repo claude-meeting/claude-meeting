@@ -59,6 +59,7 @@ def main(dry_run=False):
     expire((state / "video").glob("*"), r.get("video_days"), "video")
     expire((state / "live").glob("*.jsonl"), r.get("live_notes_days"), "live transcript")
     expire((state / "live").glob("*.json"), r.get("live_notes_days"), "live speakers")   # voiceprints of the meeting
+    expire((state / "live").glob("*.mode"), r.get("live_notes_days"), "live mode")
     expire(state.glob("session-*.json"), r.get("live_notes_days"), "session state")
 
     for action, label, p in actions:

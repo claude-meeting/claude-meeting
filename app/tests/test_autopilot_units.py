@@ -913,6 +913,22 @@ class CallAudio(Base):
         self.add(65)
         self.assertGreaterEqual(self.check(), 120)
 
+    def test_in_a_room_the_silent_call_is_no_fault(self):
+        # claude-meeting/claude-meeting#6: in room mode the call's audio is empty by nature.
+        self.add(30, "sound")
+        self.assertEqual(self.check(), 0)                         # the call was heard
+        self.add(125)
+        self.ap.MODE.now = "room"
+        try:
+            self.assertEqual(self.check(), 0)                     # silent, but in a room that is no fault
+        finally:
+            self.ap.MODE.now = "call"
+        self.assertEqual(self.check(), 0)                         # a call after the room: not heard yet
+        self.add(30, "sound")
+        self.assertEqual(self.check(), 0)
+        self.add(125)
+        self.assertGreaterEqual(self.check(), 120)                # heard, then silent: lost
+
     def test_shreds_of_the_call_are_lost_too(self):
         # Shreds: a fifth of the samples at normal level, in runs of 10-12 ms: nothing to transcribe.
         self.add(30, "sound")
@@ -1306,6 +1322,119 @@ class RecordOutcomesAtTheEnd(Base):
         self.assertEqual(self.missing_notes(), [])
         self.assertIn("Weekly", self.out.problem())                      # still shown
         self.ap.MINUTES_JOBS.problem = None
+
+
+
+class RoomModeInTheEngine(Base):
+    """claude-meeting/claude-meeting#6: what the engine does differently while the microphone is the room."""
+
+    def test_the_mode_goes_next_to_the_recording_s_own_transcript_only(self):
+        ap = self.ap
+        live = self.sb.state / "live"
+        live.mkdir(parents=True, exist_ok=True)
+        ap.LIVE_ASR.session, ap.LIVE_ASR.path = "rec-1", live / "rec-1.jsonl"   # the previous recording
+        ap.MODE.start("room")
+        ap.MODE.set("call", by_user=True)                                 # before the new transcript exists
+        self.assertFalse((live / "rec-1.mode").exists())                  # the previous one is left alone
+        ap.LIVE_ASR.session, ap.LIVE_ASR.path = "rec-2", live / "rec-2.jsonl"
+        ap.MODE.attach("rec-2", ap.LIVE_ASR.path)
+        self.assertEqual((live / "rec-2.mode").read_text(), "call\nuser\n")
+        self.assertFalse(ap.MODE.set("call", by_user=True))
+        self.assertTrue(ap.MODE.set("room", by_user=False))
+        self.assertEqual((live / "rec-2.mode").read_text(), "room\n")
+        self.assertFalse(ap.MODE.set("party", by_user=True))
+        ap.MODE.start("party")                                            # unknown: a call
+        self.assertEqual(ap.MODE.now, "call")
+
+    def test_an_engine_restarted_during_a_recording_keeps_its_mode(self):
+        ap = self.ap
+        live = self.sb.state / "live"
+        live.mkdir(parents=True, exist_ok=True)
+        (live / "rec-3.mode").write_text("room\nuser\n")                 # written before the restart
+        ap.MODE.start("call", file_wins=True)                             # the restarted engine's first guess
+        ap.MODE.attach("rec-3", live / "rec-3.jsonl")
+        self.assertEqual((ap.MODE.now, ap.MODE.by_user), ("room", True))
+        self.assertTrue(ap.MODE.room_kept)                                # still goes on when a call ends
+        fresh = ap.RecordingMode()                                        # a recording it took up as its own
+        fresh.attach("rec-3", live / "rec-3.jsonl")
+        self.assertEqual((fresh.now, fresh.by_user), ("room", True))
+        (live / "rec-7.mode").write_bytes(b"\xff\xfe")                     # not text: written anew, no crash
+        ap.LIVE_ASR.session, ap.LIVE_ASR.path = "rec-7", live / "rec-7.jsonl"
+        ap.MODE.start("call", file_wins=True)
+        ap.MODE.attach("rec-7", ap.LIVE_ASR.path)
+        self.assertEqual((live / "rec-7.mode").read_text(), "call\n")
+        self.assertEqual((live / "rec-3.mode").read_text(), "room\nuser\n")
+
+    def test_a_switch_in_the_app_before_the_restarted_engine_finds_the_transcript_wins(self):
+        ap = self.ap
+        live = self.sb.state / "live"
+        live.mkdir(parents=True, exist_ok=True)
+        (live / "rec-4.mode").write_text("call\n")                       # written before the restart
+        ap.MODE.start("call")
+        ap.LIVE_ASR.session, ap.LIVE_ASR.path = None, None                # not found again yet
+        ap.MODE.set("room", by_user=True)
+        ap.LIVE_ASR.session, ap.LIVE_ASR.path = "rec-4", live / "rec-4.jsonl"
+        ap.MODE.attach("rec-4", ap.LIVE_ASR.path)
+        self.assertEqual((ap.MODE.now, ap.MODE.by_user), ("room", True))
+        self.assertEqual((live / "rec-4.mode").read_text(), "room\nuser\n")
+
+    def test_a_recording_that_began_elsewhere_leaves_the_previous_one_alone(self):
+        # What is recording may still be the previous recording (a stop Minutes still reports, its stem not yet
+        # replaced, its transcriber finishing): the new mode, or a switch in the app, is never written into it.
+        ap = self.ap
+        live = self.sb.state / "live"
+        live.mkdir(parents=True, exist_ok=True)
+        ap.MODE.start("room", by_user=True)
+        ap.LIVE_ASR.session, ap.LIVE_ASR.path = "rec-5", live / "rec-5.jsonl"
+        ap.MODE.attach("rec-5", ap.LIVE_ASR.path)
+        ap.MODE.start("call", file_wins=True)
+        self.assertEqual((ap.MODE.now, ap.MODE.by_user), ("call", False))         # shown, and used, at once
+        ap.MODE.set("room", by_user=True)
+        self.assertEqual((live / "rec-5.mode").read_text(), "room\nuser\n")       # untouched
+        ap.LIVE_ASR.session, ap.LIVE_ASR.path = "rec-6", live / "rec-6.jsonl"
+        ap.MODE.attach("rec-6", ap.LIVE_ASR.path)
+        self.assertEqual((live / "rec-6.mode").read_text(), "room\nuser\n")
+        ap.MODE.start("call")                                             # the next one: no choice carried over
+        self.assertEqual((ap.MODE.now, ap.MODE.by_user), ("call", False))
+
+    def test_the_manual_choice(self):
+        ap = self.ap
+        self.assertEqual(ap.RecordingMode.for_manual_start([]), ("call", False))     # no voiceprint: a call
+        vp = self.sb.home / ".config" / "meeting-copilot" / "voiceprint.json"
+        vp.parent.mkdir(parents=True, exist_ok=True)
+        vp.write_text("{}")
+        self.assertEqual(ap.RecordingMode.for_manual_start([]), ("room", False))
+        self.assertEqual(ap.RecordingMode.for_manual_start(["us.zoom.xos"]), ("call", False))
+        ap.CFG["autopilot"]["manual_mode"] = "room"
+        try:
+            self.assertEqual(ap.RecordingMode.for_manual_start(["us.zoom.xos"]), ("room", True))   # the user's
+        finally:
+            ap.CFG["autopilot"]["manual_mode"] = "auto"
+
+    def test_in_a_room_the_call_s_audio_is_read_on(self):
+        # So that a switch to a call does not read a whole room meeting's backlog at once.
+        ap = self.ap
+        reads = []
+        watch = ap.CallAudioWatch()
+        watch.call.read = watch.mic.read = lambda secs: reads.append(secs) or []
+        ap.MODE.now = "room"
+        try:
+            self.assertEqual(watch.silent_secs(10_000), 0)
+        finally:
+            ap.MODE.now = "call"
+        self.assertEqual(len(reads), 2)
+
+    def test_the_screen_names_no_one_in_a_room(self):
+        ap = self.ap
+        ap.LIVE_ASR.session, ap.LIVE_ASR.path = "rec-1", self.sb.state / "rec-1.jsonl"
+        ap.SCREEN_CAP.session, ap.SCREEN_CAP.out_dir = "rec-1", self.sb.state
+        namer = ap.ScreenNamer()
+        ap.MODE.now, saved, ap.NAME_FROM_SCREEN = "room", ap.NAME_FROM_SCREEN, True     # only the room stops it
+        try:
+            namer.poll(None)
+            self.assertIsNone(namer.thread)
+        finally:
+            ap.MODE.now, ap.NAME_FROM_SCREEN = "call", saved
 
 
 if __name__ == "__main__":

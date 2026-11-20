@@ -205,11 +205,11 @@ class Sandbox:
             else:
                 p.unlink(missing_ok=True)
 
-    def command(self, cmd):
+    def command(self, cmd, **extra):
         """Drop a command file the way the Mac app does."""
         d = self.state / "commands"
         d.mkdir(exist_ok=True)
-        (d / f"{int(time.time() * 1000)}-{cmd}.json").write_text(json.dumps({"cmd": cmd}))
+        (d / f"{int(time.time() * 1000)}-{cmd}.json").write_text(json.dumps({"cmd": cmd, **extra}))
 
     # ---------------------------------------------------------------- observations
     def status(self):

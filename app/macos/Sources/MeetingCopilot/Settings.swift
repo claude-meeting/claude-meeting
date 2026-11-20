@@ -9,6 +9,7 @@ final class SettingsModel: ObservableObject {
     @Published var aliases = ""
     @Published var language = ""
     @Published var autoRecord = true
+    @Published var manualMode = "auto"
     @Published var micDevice = ""
     @Published var microphones: [String] = []
     @Published var explainEnabled = true
@@ -69,6 +70,8 @@ final class SettingsModel: ObservableObject {
             aliases = (sec("user")["aliases"] as? [String] ?? []).joined(separator: ", ")
             language = sec("user")["language"] as? String ?? ""
             autoRecord = sec("autopilot")["auto_record"] as? Bool ?? true
+            let mode = sec("autopilot")["manual_mode"] as? String ?? "auto"
+            manualMode = ["auto", "room", "call"].contains(mode) ? mode : "auto"   // what the engine does with it
             micDevice = sec("audio")["mic_device"] as? String ?? ""
             microphones = root["microphones"] as? [String] ?? []
             explainEnabled = sec("explain")["enabled"] as? Bool ?? true
@@ -98,7 +101,8 @@ final class SettingsModel: ObservableObject {
         var v: [String: AnyHashable] = [
             "user.name": name,
             "user.aliases": aliases.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
-            "user.language": language, "autopilot.auto_record": autoRecord, "audio.mic_device": micDevice,
+            "user.language": language, "autopilot.auto_record": autoRecord, "autopilot.manual_mode": manualMode,
+            "audio.mic_device": micDevice,
             "explain.enabled": explainEnabled, "explain.detail": detail, "explain.web_verify": webVerify,
             "explain.answer_model": answerModel,
             "llm.provider": provider, "llm.base_url": baseURL.trimmingCharacters(in: .whitespaces),
@@ -197,6 +201,11 @@ struct SettingsView: View {
                 }
                 Section(L.t("s_recording")) {
                     Toggle(L.t("s_auto_record"), isOn: $model.autoRecord)
+                    Picker(L.t("s_manual_mode"), selection: $model.manualMode) {
+                        Text(L.t("s_manual_mode_auto")).tag("auto")
+                        Text(L.t("s_manual_mode_room")).tag("room")
+                        Text(L.t("s_manual_mode_call")).tag("call")
+                    }
                     Picker(L.t("s_microphone"), selection: $model.micDevice) {
                         Text(L.t("s_mic_default")).tag("")
                         ForEach(model.microphones, id: \.self) { Text($0).tag($0) }

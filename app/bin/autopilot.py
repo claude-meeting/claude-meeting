@@ -249,12 +249,18 @@ def ask_model(prompt, images=(), timeout=180, model=None, web=True):
         return None
 
 
-def recording_started_at():
-    """When the current recording began: the mic stem's creation time, else now."""
+def stem_born():
+    """When Minutes created the current recording's microphone stem, or None."""
     try:
         return float(os.stat(CURRENT_WAV.with_suffix(".voice.wav")).st_birthtime)
     except (OSError, AttributeError):
-        return time.time()
+        return None
+
+
+def recording_started_at():
+    """When the current recording began: the mic stem's creation time, else now."""
+    born = stem_born()
+    return time.time() if born is None else born
 
 
 def model_problem():
@@ -385,6 +391,91 @@ def app_label(names):
     return os.path.basename(n).split(".")[-1] or LANG.t("call")
 
 
+class RecordingMode:
+    """What the microphone is in this recording (bin/live_transcriber.py reads it from <transcript>.mode):
+    "call", the user, with the others on the call's audio; or "room", everyone in the room (an in-person meeting, a
+    phone on speaker next to the Mac). A recording started for a call is a call; one started from the app with no call
+    app on the microphone is a room ([autopilot] manual_mode). The app can switch it. A room the engine chose turns
+    into a call when a call app takes the microphone (the user started recording, then joined the call); a room the
+    user chose, in the menu or in Settings, stays one (a meeting in a room with others on a call).
+    The mode is written next to the recording's own transcript only (LiveASR.ensure creates it), and read back from
+    there when the engine restarts during a recording."""
+
+    MODES = ("call", "room")
+
+    def __init__(self):
+        self.now = "call"
+        self.by_user = False
+        self.session = None           # the recording whose transcript has this mode written next to it
+        self.file_wins = True         # a mode already written there (before an engine restart) is the recording's
+        self.started_here = False     # for a recording this engine just started (not attached yet)
+
+    def start(self, mode, by_user=False, file_wins=False):
+        """The mode of a recording that begins: now, and in its transcript once LiveASR.ensure creates it. Not
+        written into any earlier recording's (one still finishing, or one Minutes still reports after a stop).
+        `file_wins`: for a recording that began elsewhere (in Minutes itself, or before this engine restarted),
+        whose transcript may already have its mode."""
+        self.now, self.by_user = (mode if mode in self.MODES else "call"), by_user
+        self.session, self.file_wins, self.started_here = None, file_wins, not file_wins
+        log(f"recording mode: {self.now}" + (" (chosen)" if by_user else ""))
+
+    def set(self, mode, by_user):
+        if mode not in self.MODES:
+            return False
+        self.by_user = by_user
+        if by_user and not self.attached():
+            self.file_wins = False                    # the app's choice, before the transcript is found
+        if mode == self.now:
+            self.write()
+            return False
+        log(f"recording mode: {self.now} -> {mode} ({'from the app' if by_user else 'a call app took the microphone'})")
+        self.now = mode
+        self.write()
+        return True
+
+    @property
+    def room_kept(self):
+        """A room the user chose (in the app, or as the Settings default): people in the room, maybe others on a
+        call; the recording goes on when a call ends. Read back from the mode file after an engine restart."""
+        return self.now == "room" and self.by_user
+
+    def attached(self):
+        return bool(self.session and self.session == LIVE_ASR.session and LIVE_ASR.path)
+
+    def write(self):
+        """Into the current recording's transcript, once it exists (never into the previous one's)."""
+        if self.attached():
+            speakers.atomic_write(speakers.mode_path(LIVE_ASR.path), self.now + ("\nuser" if self.by_user else "") + "\n")
+
+    def attach(self, session, path):
+        """LiveASR.ensure created (or found again) this recording's transcript: a mode written there by an engine
+        that ran before a restart is the recording's, unless the app chose one since; otherwise this one is
+        written."""
+        self.session, file_wins, self.file_wins, self.started_here = session, self.file_wins, False, False
+        try:
+            with speakers.open_mode(path) as f:
+                lines = f.read().splitlines()
+        except OSError:
+            lines = []
+        if file_wins and lines and lines[0].strip() in self.MODES:
+            self.now, self.by_user = lines[0].strip(), len(lines) > 1 and lines[1].strip() == "user"
+            log(f"recording mode: {self.now} (kept from before)")
+        else:
+            self.write()
+
+    @staticmethod
+    def for_manual_start(call_apps):
+        """The mode of a recording the user started, and whether the user chose it ([autopilot] manual_mode;
+        "auto": a call when a call app has the microphone, and when the user has no voiceprint, which is what tells
+        the user apart in a room; else a room)."""
+        choice = CFG["autopilot"].get("manual_mode", "auto")
+        if choice in RecordingMode.MODES:
+            return choice, True
+        if call_apps or config.voiceprint_file(CFG) is None:
+            return "call", False
+        return "room", False
+
+
 class LiveASR:
     """Runs bin/live_transcriber.py for the recording in progress (per-speaker live transcript)."""
 
@@ -396,19 +487,25 @@ class LiveASR:
         self.waiting_since = None      # when we first looked for the stems of this recording
         self.carry_from = None         # transcript of the recording this one continues (restarted mid-call)
 
+    @staticmethod
+    def current_session():
+        """The id of the recording in progress, from its microphone stem (None until Minutes has created it)."""
+        born = stem_born()
+        return None if born is None else f"rec-{int(born)}"
+
     def ensure(self):
         """Start the transcriber for the current recording once Minutes has created its stems."""
         if not LIVE_ASR_ENABLED:
             return
-        voice = CURRENT_WAV.with_suffix(".voice.wav")
-        if not voice.exists():
+        if not CURRENT_WAV.with_suffix(".voice.wav").exists():
             self.waiting_since = self.waiting_since or time.time()
             return
-        try:
-            session = f"rec-{int(os.stat(voice).st_birthtime)}"
-        except (OSError, AttributeError):
+        session = self.current_session()
+        if session is None:
             return
         if session == self.session:
+            if MODE.session != session and not MODE.started_here:
+                MODE.attach(session, self.path)      # taken for a new recording, then found to be this one again
             return          # already running, ran, or failed for this recording; don't restart in a loop
         self.waiting_since = None
         if self.proc and self.proc.poll() is None:
@@ -435,6 +532,7 @@ class LiveASR:
             minutes_record.mark_part(self.path, self.carry_from)      # one meeting: same notes, one record
             log(f"live transcriber for {session} continues the speakers of {self.carry_from.stem}")
             self.carry_from = None
+        MODE.attach(session, self.path)           # read by the transcriber from its first line on
         with open(STATE / "live_transcriber.log", "a") as logf:      # the child keeps its own copy
             self.proc = subprocess.Popen([sys.executable, LIVE_TRANSCRIBER,
                                           str(CURRENT_WAV), str(self.path)], stdout=logf, stderr=logf)
@@ -543,6 +641,7 @@ class LiveASR:
 
 
 LIVE_ASR = LiveASR()
+MODE = RecordingMode()
 
 
 def learn_voices(teacher, transcript):
@@ -611,7 +710,7 @@ class ScreenNamer:
 
     def poll(self, copilot):
         if not (NAME_FROM_SCREEN and LIVE_ASR.session and LIVE_ASR.path and SCREEN_CAP.out_dir
-                and SCREEN_CAP.session == LIVE_ASR.session):
+                and SCREEN_CAP.session == LIVE_ASR.session and MODE.now == "call"):   # a room shows no tiles
             return
         if self.thread and self.thread.is_alive():
             return
@@ -1283,9 +1382,16 @@ class CallAudioWatch:
         self.call, self.mic = StemLevels(".system.wav"), StemLevels(".voice.wav")
 
     def silent_secs(self, now, transcript=None):
-        """Seconds of lost call audio (0 while the call is heard or the check is off). Reads only what Minutes
-        added since the last call, at most every CHECK_SECS."""
+        """Seconds of lost call audio (0 while the call is heard, the check is off, or the microphone is the room:
+        there the call's audio is empty by nature). Reads only what Minutes added since the last call, at most every
+        CHECK_SECS."""
         if CALL_AUDIO_LOST_SECS <= 0 or now - self.last_check < self.CHECK_SECS:
+            return 0
+        if MODE.now == "room":
+            self.last_check = now
+            self.call.read(CALL_AUDIO_LOST_SECS)          # read on, so a switch to a call starts from now
+            self.mic.read(CALL_AUDIO_LOST_SECS)
+            self.heard = False                            # a call after the room is lost only once it was heard
             return 0
         self.last_check = now
         call, mic = self.call.read(CALL_AUDIO_LOST_SECS), self.mic.read(CALL_AUDIO_LOST_SECS)
@@ -1711,6 +1817,7 @@ def main():
     started_at = recording_started_at() if auto_recording else 0
     meeting_start = started_at        # the meeting's first start: a restart after lost call audio keeps it
     foreign = False       # a recording started outside the autopilot (in Minutes itself)
+    foreign_stem = None   # its microphone stem (LiveASR.current_session), once there
     retention_proc = None
     cooldown_until = 0
     last_tick = 0
@@ -1736,7 +1843,7 @@ def main():
             "paused": control.paused(), "processing": processing,
             "notes": str(copilot.notes) if recording and copilot.notes else "",
             "meetings_dir": str(MEETINGS_DIR), "language": LANG.family, "open_viewer": OPEN_VIEWER,
-            "asr_missing": ASR_MISSING,
+            "asr_missing": ASR_MISSING, "mode": MODE.now if recording else "",
             "problems": [p for p in (
                 config.LOAD_ERROR,
                 MODEL_CHECK.problem,
@@ -1772,6 +1879,17 @@ def main():
             # Status lags right after we start a recording; treat it as running for a grace period.
             if (auto_recording or manual) and now - started_at < START_GRACE_SECS:
                 recording = True
+            stem = LiveASR.current_session() if recording else None
+            if foreign and stem and foreign_stem and stem != foreign_stem:
+                foreign = False          # stopped and started again in Minutes between two looks: a new recording
+            if recording and not auto_recording and not manual and not foreign:
+                # Started in Minutes itself, or one this engine took up again after a restart (whose transcript
+                # keeps its mode). Decided before the app's commands, so that a switch in the menu wins.
+                foreign, title, started_at, foreign_stem = True, LANG.t("meeting"), recording_started_at(), stem
+                meeting_start = started_at
+                MODE.start(*MODE.for_manual_start(users), file_wins=True)
+            elif foreign and not foreign_stem:
+                foreign_stem = stem
 
             for command in control.take_commands():       # from the Mac app
                 cmd = command.get("cmd")
@@ -1780,6 +1898,13 @@ def main():
                     control.set_paused(cmd == "pause_auto")
                 elif cmd == "restart_when_idle":
                     restart_requested = True
+                elif cmd == "mode":            # also while Minutes' status is off for a moment
+                    kept = MODE.room_kept
+                    MODE.set(command.get("mode"), by_user=True)
+                    if not kept and MODE.room_kept:
+                        manual_call = False    # a call before the chosen room does not end it either
+                    if kept and not MODE.room_kept and free_since:
+                        free_since = now       # the microphone was free already: the wait to stop starts now
                 elif cmd == "start" and not recording:
                     title = LANG.t("meeting") + f" {datetime.now():%H%M}"
                     publish(recording, False)
@@ -1788,6 +1913,7 @@ def main():
                     if r and r.returncode == 0:
                         manual, manual_call, started_at, recording = True, False, now, True
                         meeting_start = now
+                        MODE.start(*MODE.for_manual_start(users))
                         MODEL_CHECK.check(title)
                         notify(LANG.t("n_recording_started"), title)
                     else:
@@ -1812,6 +1938,8 @@ def main():
             if recording:
                 safely("live transcriber", LIVE_ASR.ensure)
                 safely("capture watch", CAPTURE_WATCH.check)
+                if MODE.now == "room" and not MODE.by_user and users and MODE.set("call", by_user=False):
+                    notify(LANG.t("n_mode_call"), LANG.t("n_mode_call_body"))
                 lost = safely("call audio", CALL_AUDIO.silent_secs, now, LIVE_ASR.path)
                 if lost and not users and not browser_call():
                     lost = 0    # no call going on: its silence is no fault
@@ -1853,7 +1981,7 @@ def main():
             if users_known and users:
                 others_since = others_since or now
                 free_since = None
-                manual_call = manual_call or manual
+                manual_call = manual_call or (manual and not MODE.room_kept)    # a chosen room: not its call
             elif users_known:
                 others_since = None
                 free_since = free_since or now
@@ -1871,6 +1999,7 @@ def main():
                 if ok:
                     auto_recording = True
                     started_at = meeting_start = now
+                    MODE.start("call")
                     recording = True   # status polled above predates the start; don't treat it as "ended"
                     AUTO_FLAG.write_text(title)
                     MODEL_CHECK.check(title)
@@ -1884,7 +2013,8 @@ def main():
                     notify(LANG.t("n_recording_failed"), LANG.t("n_recording_failed_body", title=title, reason=reason[:160]), sound="Basso")
 
             # Auto stop: recordings we started, and those started from the app whose call has ended
-            if (recording and (auto_recording or (manual and manual_call)) and free_since
+            # A room the user chose (RecordingMode.room_kept) goes on when a call ends.
+            if (recording and (auto_recording or (manual and manual_call)) and free_since and not MODE.room_kept
                     and now - free_since >= STOP_AFTER_SECS and now >= stop_retry_at):
                 publish(recording, False)
                 r = run([MINUTES, "stop"], timeout=60)
@@ -1905,9 +2035,6 @@ def main():
             if not recording:
                 stop_retry_at = 0
 
-            if recording and not auto_recording and not manual and not foreign:
-                foreign, title, started_at = True, LANG.t("meeting"), recording_started_at()
-                meeting_start = started_at
             if not recording and foreign:
                 foreign = False
             if not recording and manual and now - started_at >= START_GRACE_SECS:

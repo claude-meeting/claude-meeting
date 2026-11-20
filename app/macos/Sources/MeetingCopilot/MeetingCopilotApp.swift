@@ -354,6 +354,12 @@ struct MenuContent: View {
             recentMeetings
             if s.recording {
                 Button(L.t("stop"), systemImage: "stop.circle") { engine.send("stop") }
+                // Call: the microphone is the user. Room: everyone in the room (an in-person meeting, a phone on
+                // speaker). The engine picks one; the user can switch.
+                Button(L.t(s.mode == "room" ? "mode_to_call" : "mode_to_room"),
+                       systemImage: s.mode == "room" ? "phone" : "person.3") {
+                    engine.send("mode", ["mode": s.mode == "room" ? "call" : "room"])
+                }
             } else {
                 Button(L.t("start"), systemImage: "record.circle") { engine.send("start") }
             }
@@ -398,6 +404,9 @@ struct MenuContent: View {
             VStack(alignment: .leading, spacing: 2) {
                 Label(L.t("recording"), systemImage: "record.circle.fill").foregroundStyle(.red).font(.headline)
                 Text(s.title).font(.callout)
+                if !s.mode.isEmpty {
+                    Text(L.t(s.mode == "room" ? "mode_room" : "mode_call")).font(.caption).foregroundStyle(.secondary)
+                }
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
                     Text(elapsed(since: s.started_at, now: ctx.date)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }

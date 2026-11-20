@@ -54,8 +54,8 @@ class Voiceprint:
 
 def from_config(cfg):
     """(Voiceprint, threshold) when verification is on and the user has enrolled, else (None, None)."""
-    v = cfg.get("voice", {})
-    path = Path(v.get("voiceprint_file") or "~/.config/meeting-copilot/voiceprint.json").expanduser()
-    if not v.get("verify", True) or not path.exists():
+    import config
+    path = config.voiceprint_file(cfg)
+    if path is None:
         return None, None
-    return Voiceprint().load(path), float(v.get("threshold", 0.4))
+    return Voiceprint().load(path), float(cfg.get("voice", {}).get("threshold", 0.4))

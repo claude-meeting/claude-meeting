@@ -2,6 +2,21 @@
 
 The project's public history starts here, with its first public release.
 
+## v0.1.20 (2026-11-20)
+
+- **Room mode: in-person meetings and phones on speaker** (#6). The microphone is the room: every voice on it is kept
+  and told apart (Others A, B, C), and your voiceprint marks your lines, where call mode takes the microphone as you.
+  By default a recording you start (from the menu, or in Minutes) with no other app on the microphone uses room mode
+  once your voiceprint is recorded (and `[voice] verify` is on); otherwise it is a call, as before. Auto-started
+  recordings are calls. The menu shows the mode and switches it; a switch applies to what is said after it. A room the
+  engine chose turns into a call when another app (a call app, a browser tab) takes the microphone; a room you chose
+  (in the menu, or as the Settings default *Recording started from the menu*, `[autopilot] manual_mode`) stays one and
+  keeps recording when a call ends: stop it yourself. In a room, speakers are not named from the video tiles, and a
+  room chosen without a voiceprint counts every voice, yours too, as someone else.
+  Telling people apart from one microphone is harder than on a call: one person is often shown as two speakers (give
+  both the same name), and some lines can be given to the wrong side, others' as yours or yours as others' (on a
+  public meeting-room test set, about 1 in 7 lines marked as yours and 1 in 12 of yours).
+
 ## v0.1.19 (2026-11-18)
 
 - **Simplified Chinese documentation**: `README.zh-CN.md` and `docs/configuration.zh-CN.md`, with screenshots and a
