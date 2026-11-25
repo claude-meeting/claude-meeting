@@ -12,7 +12,7 @@ Most people only need the app's Settings window (menu bar icon → Settings…).
 | Section | What |
 |---|---|
 | `[user]` | your name, the ways people address you (so questions to you are detected), and the language: `zh-TW` (Traditional Chinese), `zh-CN` (Simplified Chinese) or `en` (notes, answers, notifications and speech recognition follow it; empty = macOS language) |
-| `[autopilot]` | auto-record on/off, start/stop delays, apps to ignore, `manual_mode`: what *Start recording* picks (`auto`, `room` for in-person meetings and phones on speaker, `call`) |
+| `[autopilot]` | auto-record on/off, start/stop delays, apps to ignore, `manual_mode`: what *Start recording* picks (`auto`, `room` for in-person meetings and phones on speaker, `call`); when the call's audio is not recorded: `call_audio_lost_secs`, `call_audio_restarts` (restarts per call), `fill_call_gaps` (after a meeting, add what the call said that the live transcript missed) |
 | `[copilot]` / `[explain]` | models, how often notes are analysed, answer length, web check |
 | `[llm]` | who writes the notes and answers: your Claude subscription (default) or any OpenAI-compatible service |
 | `[notify]` | which notifications to show, sounds, minimum gap |

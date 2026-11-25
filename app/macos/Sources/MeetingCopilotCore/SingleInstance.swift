@@ -39,6 +39,37 @@ public enum SingleInstance {
         return older.isEmpty ? .run : .replace(older)
     }
 
+    /// Whether the running copy's file was replaced since it started (an update installed over it, 2026-11-20: the
+    /// menu stayed the old one for five days): what runs is older than what is installed. The executable changed
+    /// after the launch (a build installed over it), or, when both are known, the installed version is not the one
+    /// running (a copy from a disk image or a zip keeps the build's file dates).
+    public static func replaced(executableChanged: Date?, launched: Date?, running: String? = nil,
+                                installed: String? = nil) -> Bool {
+        if let running, let installed, running != installed { return true }
+        guard let executableChanged, let launched else { return false }
+        return executableChanged > launched
+    }
+
+    /// The executable's last change of a bundle (nil when it cannot be read).
+    public static func executableChanged(_ bundle: URL?) -> Date? {
+        bundle.flatMap { Bundle(url: $0)?.executableURL }
+            .flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
+    }
+
+    /// "1.2.3 (45)" from an Info.plist's contents ("1.2.3" without `build`).
+    public static func version(_ info: [String: Any]?, build: Bool = true) -> String? {
+        guard let short = info?["CFBundleShortVersionString"] as? String else { return nil }
+        return build ? "\(short) (\(info?["CFBundleVersion"] as? String ?? ""))" : short
+    }
+
+    /// The version of the bundle installed at `bundle` now, read from its Info.plist file (Bundle(url:) keeps what
+    /// it read first, and for this copy's own path that is what runs).
+    public static func installedVersion(_ bundle: URL?, build: Bool = true) -> String? {
+        guard let bundle else { return nil }
+        let info = NSDictionary(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")) as? [String: Any]
+        return version(info, build: build)
+    }
+
     /// What a copy that hands over asks the running copy to show: the notes (of a file, or the current ones when
     /// the path is empty), the settings or the setup guide.
     public enum Request: Equatable {

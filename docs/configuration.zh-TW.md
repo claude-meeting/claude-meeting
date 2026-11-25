@@ -11,7 +11,7 @@
 | 區段 | 內容 |
 |---|---|
 | `[user]` | 你的名字、別人怎麼稱呼你（用來判斷「問我的問題」）、語言：`zh-TW`（繁體中文）、`zh-CN`（簡體中文）或 `en`（筆記、回答、通知和語音辨識都跟著它；空白＝依 macOS 語言） |
-| `[autopilot]` | 自動錄音開關、開始／停止的等待秒數、要忽略的 App、`manual_mode`：「開始錄音」用哪個模式（`auto`；`room` 實體會議與手機擴音；`call`） |
+| `[autopilot]` | 自動錄音開關、開始／停止的等待秒數、要忽略的 App、`manual_mode`：「開始錄音」用哪個模式（`auto`；`room` 實體會議與手機擴音；`call`）；錄不到通話聲音時：`call_audio_lost_secs`、`call_audio_restarts`（每場通話重新開始錄音幾次）、`fill_call_gaps`（會後把即時逐字稿漏掉的通話內容補上） |
 | `[copilot]`／`[explain]` | 模型、整理頻率、回答長度、網路查證 |
 | `[llm]` | 誰來寫筆記與回答：你的 Claude 訂閱（預設），或任何 OpenAI 相容格式的服務 |
 | `[notify]` | 要顯示哪些通知、音效、最短間隔 |

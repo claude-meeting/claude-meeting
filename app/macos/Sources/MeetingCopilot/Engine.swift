@@ -15,6 +15,8 @@ final class Engine: ObservableObject {
     /// engineOutdated, looked at every few seconds (it reads files): what the menu shows.
     @Published private(set) var outdated = false
     private var outdatedCheckedAt = Date.distantPast
+    /// A newer copy of the app was installed over this running one: reopen to run it.
+    @Published private(set) var appReplaced = false
 
     @Published private(set) var appDir: URL
     private var timer: Timer?
@@ -106,6 +108,12 @@ final class Engine: ObservableObject {
             outdatedCheckedAt = Date()
             let now = engineOutdated
             if now != outdated { outdated = now }
+            // Bundle.main's Info.plist is read at launch; the file is the one installed now.
+            let replaced = SingleInstance.replaced(executableChanged: SingleInstance.executableChanged(Bundle.main.bundleURL),
+                                                   launched: NSRunningApplication.current.launchDate,
+                                                   running: SingleInstance.version(Bundle.main.infoDictionary),
+                                                   installed: SingleInstance.installedVersion(Bundle.main.bundleURL))
+            if replaced != appReplaced { appReplaced = replaced }
         }
         guard installed else {
             if reachable { reachable = false }
@@ -146,6 +154,13 @@ final class Engine: ObservableObject {
 
     static func markInstalled() {
         try? bundleVersion.write(to: supportEngine.appendingPathComponent(".version"), atomically: true, encoding: .utf8)
+    }
+
+    /// Open the installed copy: it replaces this older one (SingleInstance.decide).
+    func reopen() {
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in }
     }
 
     func send(_ cmd: String, _ extra: [String: String] = [:]) {

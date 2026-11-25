@@ -387,7 +387,7 @@ def main():
             if "relabel" in row:
                 continue
             # Which stem a row came from: its track, or for rows written before tracks were recorded its speaker.
-            track = {"voice": i18n.SELF, "system": i18n.OTHERS}.get(row.get("track"), row["speaker"])
+            track = {"voice": i18n.SELF, "system": i18n.OTHERS}[speakers.track_of(row)]
             resume_at[track] = max(resume_at.get(track, 0.0), float(row["end"]))
         except (ValueError, KeyError, TypeError):
             pass

@@ -42,8 +42,61 @@ final class NotesModel: ObservableObject {
     }
 }
 
+/// The recording at the top of the live-notes window: state and time, the mode, its switch, start or stop (the menu
+/// bar has them too; the user looks here).
+struct RecordingControls: View {
+    @ObservedObject var engine: Engine
+
+    var body: some View {
+        let s = engine.status
+        let bar = RecordingBar.of(s)
+        if engine.appReplaced {
+            HStack {
+                Label(L.t("app_updated"), systemImage: "arrow.triangle.2.circlepath").font(.callout)
+                Spacer()
+                Button(L.t("reopen")) { engine.reopen() }.controlSize(.small)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 6)
+            .background(Color.orange.opacity(0.15))
+        }
+        HStack(spacing: 10) {
+            if !engine.reachable {
+                Label(L.t("offline"), systemImage: "bolt.horizontal.circle").foregroundStyle(.secondary)
+            } else if s.recording {
+                Label(L.t(bar.state), systemImage: "record.circle.fill").foregroundStyle(.red).font(.callout.bold())
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    Text(RecordingBar.elapsed(since: s.started_at, now: ctx.date.timeIntervalSince1970))
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                if let mode = bar.mode {
+                    Label(L.t(mode), systemImage: s.mode == "room" ? "person.3.fill" : "phone.fill")
+                        .font(.callout.bold())
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background((s.mode == "room" ? Color.green : Color.blue).opacity(0.18), in: Capsule())
+                        .help(L.t(s.mode == "room" ? "mode_room" : "mode_call"))
+                }
+                if let to = bar.switchTo, let mode = bar.switchMode {
+                    Button(L.t(to)) { engine.send("mode", ["mode": mode]) }.controlSize(.small)
+                }
+            } else {
+                Label(L.t(bar.state), systemImage: "stop.circle").foregroundStyle(.secondary).font(.callout)
+            }
+            Spacer()
+            if engine.reachable {
+                Button(L.t(bar.action), systemImage: s.recording ? "stop.circle" : "record.circle") {
+                    engine.send(bar.action)
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+    }
+}
+
 struct NotesView: View {
     @ObservedObject var model: NotesModel
+    /// The engine, for the recording controls (nil: none shown).
+    var engine: Engine? = nil
     var openSpeakers: () -> Void = {}
     /// Earlier meetings' notes, and opening one (nil: back to the meeting in progress).
     var recent: () -> [RecentNote] = { [] }
@@ -117,6 +170,10 @@ struct NotesView: View {
                     Toggle(L.t("follow"), isOn: $follow).toggleStyle(.switch).controlSize(.small)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 8)
+                if let engine {
+                    Divider()
+                    RecordingControls(engine: engine)
+                }
                 Divider()
                 if model.blocks.isEmpty {
                     Spacer()

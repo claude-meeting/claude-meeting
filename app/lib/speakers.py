@@ -13,6 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
+import i18n
+
 
 def atomic_write(path, text):
     """Write a file other processes read: they see the old or the new content, never half of it."""
@@ -401,6 +403,12 @@ def line_vectors(transcript):
 def names_path(transcript):
     """Names given to this meeting's speakers ({"A": "毛毛蟲"}), next to the live transcript."""
     return Path(str(transcript).replace(".jsonl", ".names.json"))
+
+
+def track_of(row):
+    """Which stem a transcript row came from: its "track", or for rows written before tracks were recorded, its
+    speaker (the user on the microphone, the others on the call)."""
+    return row.get("track") or ("voice" if row.get("speaker") == i18n.SELF else "system")
 
 
 def mode_path(transcript):

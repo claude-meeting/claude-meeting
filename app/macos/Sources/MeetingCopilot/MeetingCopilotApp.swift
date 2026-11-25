@@ -161,13 +161,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let me = NSRunningApplication.current
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: id)
             .filter { $0.processIdentifier != me.processIdentifier && !$0.isTerminated }
-        let version = { (url: URL?) in url.flatMap { Bundle(url: $0)?.infoDictionary?["CFBundleShortVersionString"] as? String } }
+        let version = { (url: URL?) in SingleInstance.installedVersion(url, build: false) }
         let copies = others.map { app -> SingleInstance.Copy in
             // Replaced on disk since it started (an update copied over the running app): the file's version is not
-            // what runs there, which is older.
-            let changed = app.bundleURL.flatMap { Bundle(url: $0)?.executableURL }
-                .flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
-            let stale = if let changed, let started = app.launchDate { changed > started } else { false }
+            // what runs there, which is older. (A copy from a disk image keeps the build's date: dragged over a
+            // running app, the app opens the running copy, whose notes window and menu offer to reopen it.)
+            let stale = SingleInstance.replaced(executableChanged: SingleInstance.executableChanged(app.bundleURL),
+                                                launched: app.launchDate)
             let first = if let a = app.launchDate, let b = me.launchDate, a != b { a < b }
                         else { app.processIdentifier < me.processIdentifier }
             return .init(version: stale ? nil : version(app.bundleURL), startedFirst: first)
@@ -298,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             w.isReleasedWhenClosed = false
             w.delegate = self
             w.contentView = NSHostingView(rootView: NotesView(
-                model: notes, openSpeakers: { [weak self] in self?.showSpeakers() },
+                model: notes, engine: engine, openSpeakers: { [weak self] in self?.showSpeakers() },
                 recent: { [weak self] in self?.engine.recentNotes() ?? [] },
                 open: { [weak self] url in self?.showNotes(url ?? self?.engine.currentNotes) }))
             w.setFrameAutosaveName("LiveNotes")
@@ -341,6 +341,11 @@ struct MenuContent: View {
             ForEach(s.problems, id: \.self) { p in
                 Label(p, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            if engine.appReplaced {
+                // A newer app was installed over this running one (it went on showing the old menu, 2026-11-20).
+                Button(L.t("app_updated"), systemImage: "arrow.triangle.2.circlepath") { engine.reopen() }
+                    .foregroundStyle(.orange)
             }
             if engine.outdated {
                 // The background program still runs the engine of an older app until it is updated.
@@ -405,10 +410,10 @@ struct MenuContent: View {
                 Label(L.t("recording"), systemImage: "record.circle.fill").foregroundStyle(.red).font(.headline)
                 Text(s.title).font(.callout)
                 if !s.mode.isEmpty {
-                    Text(L.t(s.mode == "room" ? "mode_room" : "mode_call")).font(.caption).foregroundStyle(.secondary)
+                    Text(L.t(s.mode == "room" ? "mode_room" : "mode_call")).font(.callout)   // not a grey footnote
                 }
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                    Text(elapsed(since: s.started_at, now: ctx.date)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(RecordingBar.elapsed(since: s.started_at, now: ctx.date.timeIntervalSince1970)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
         } else if s.processing {
@@ -418,11 +423,5 @@ struct MenuContent: View {
         } else {
             Label(L.t("idle"), systemImage: "waveform").foregroundStyle(.secondary)
         }
-    }
-
-    private func elapsed(since start: Double, now: Date) -> String {
-        guard start > 0 else { return "" }
-        let secs = max(0, Int(now.timeIntervalSince1970 - start))
-        return String(format: "%d:%02d:%02d", secs / 3600, secs / 60 % 60, secs % 60)
     }
 }

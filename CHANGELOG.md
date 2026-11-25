@@ -2,6 +2,27 @@
 
 The project's public history starts here, with its first public release.
 
+## v0.1.21 (2026-11-25)
+
+- **A call whose audio is not recorded is caught and handled**: a call's audio that never reached the recording (not
+  only one that stopped) is noticed while a call goes on, and the recording is restarted up to 3 times, each after a
+  longer wait (`[autopilot] call_audio_restarts`); your own talking no longer hides it. With no restart left, the
+  recording turns to room mode for now, so the others the microphone hears are kept, and back to call mode when the
+  call's audio returns. After a meeting, what the call said that the live transcript missed is taken from the saved
+  call track and added to the meeting record (`[autopilot] fill_call_gaps`; `tools/fill_call_gaps.py` for an older
+  meeting). When the next call has already begun, the record is written at once and filled after that call.
+- **Muting in a web call no longer ends its recording**, and a recording started from the menu while muted in a web
+  call is a call, not a room: Chrome's sign that a web call is on now counts as a call.
+- **The live-notes window shows the recording**: recording or not and for how long, the mode, a switch to the other
+  mode, and start or stop. The menu shows the mode at normal size.
+- **An app left running after an update says so**: when a newer app was installed over the running one, the menu and
+  the notes window offer to reopen it.
+- **A recording with almost nothing in it is not waited on**: Minutes ends such a job as "needs review" (a few seconds
+  started and stopped by mistake); the engine now takes that as done.
+- **Lighter on the Mac during meetings**: only the newest changed frame of the screen is read for text (it was every
+  changed frame, the most CPU of anything in a video call), and none while the recording reports audio input
+  overload.
+
 ## v0.1.20 (2026-11-20)
 
 - **Room mode: in-person meetings and phones on speaker** (#6). The microphone is the room: every voice on it is kept

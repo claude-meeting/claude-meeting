@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -288,6 +289,31 @@ class ScreenDiff(unittest.TestCase):
         self.assertEqual(ev["kind"], "update")
         self.assertEqual(ev["text"], "第四行新的捲動內容出現")
         self.assertEqual(self.frame(3, ["完全不同的投影片", "新主題"])["kind"], "new_page")
+
+    def save(self, seed, lines):
+        self.n += 1
+        path = Path(self.dir.name) / f"frame-{self.n}.png"
+        Image.fromarray((np.random.default_rng(seed).random((64, 64)) * 255).astype("uint8")).save(path)
+        self.pages[path.name] = lines
+        os.utime(path, (time.time() - 5 + self.n * 0.1,) * 2)
+        return path
+
+    def test_only_the_newest_changed_frame_is_read(self):
+        # Every changed frame was OCR'd: about 16 a minute in a video call, the most CPU of anything (2026-11-25).
+        read = []
+        self.w.ocr = lambda p: read.append(Path(p).name) or self.pages[Path(p).name]
+        for seed in (1, 2, 3, 4):
+            self.save(seed, [f"第 {seed} 頁的內容文字"])
+        events = self.w.poll(self.dir.name)
+        self.assertEqual([e["kind"] for e in events], ["frame", "frame", "frame", "new_page"])
+        self.assertEqual(read, ["frame-4.png"])
+        self.save(5, ["又一頁"])
+        self.assertEqual([e["kind"] for e in self.w.poll(self.dir.name, ocr=False)], ["frame"])   # overloaded
+        self.assertEqual(read, ["frame-4.png"])
+        events = self.w.poll(self.dir.name)                                # the overload is over, the screen stayed
+        self.assertEqual([(e["kind"], e["text"]) for e in events], [("new_page", "又一頁")])
+        self.assertEqual(read, ["frame-4.png", "frame-5.png"])
+        self.assertEqual(self.w.poll(self.dir.name), [])                   # read once
 
 
 class Speakers(unittest.TestCase):

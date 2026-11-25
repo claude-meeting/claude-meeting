@@ -107,3 +107,39 @@ public enum UserConfig {
         return NSString(string: v.isEmpty ? fallback : v).expandingTildeInPath
     }
 }
+
+/// What the live-notes window shows about the recording (2026-11-25: the mode was a small grey line in the menu,
+/// and the user could not tell which mode it was in): its state, the mode, the switch, and start or stop.
+public struct RecordingBar: Equatable {
+    /// Strings keys: the state ("recording" or "not_recording"), the mode ("mode_short_call"/"mode_short_room", nil
+    /// when not recording), the switch ("mode_switch_room"/"mode_switch_call", nil when not recording), and the
+    /// action ("stop" or "start").
+    public let state: String
+    public let mode: String?
+    public let switchTo: String?
+    public let action: String
+    /// The mode the switch sends ("room" or "call").
+    public let switchMode: String?
+
+    public init(state: String, mode: String?, switchTo: String?, action: String, switchMode: String?) {
+        self.state = state; self.mode = mode; self.switchTo = switchTo; self.action = action
+        self.switchMode = switchMode
+    }
+
+    public static func of(_ s: EngineStatus) -> RecordingBar {
+        guard s.recording else {
+            return RecordingBar(state: "not_recording", mode: nil, switchTo: nil, action: "start", switchMode: nil)
+        }
+        let room = s.mode == "room"
+        return RecordingBar(state: "recording", mode: room ? "mode_short_room" : "mode_short_call",
+                            switchTo: room ? "mode_switch_call" : "mode_switch_room", action: "stop",
+                            switchMode: room ? "call" : "room")
+    }
+
+    /// "1:02:03" since the recording began (empty before it is known).
+    public static func elapsed(since start: Double, now: Double) -> String {
+        guard start > 0 else { return "" }
+        let secs = max(0, Int(now - start))
+        return String(format: "%d:%02d:%02d", secs / 3600, secs / 60 % 60, secs % 60)
+    }
+}

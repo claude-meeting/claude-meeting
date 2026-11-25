@@ -96,6 +96,20 @@ final class EngineStatusTests: XCTestCase {
         XCTAssertEqual(try decode(#"{"mode": 3}"#).mode, "")
     }
 
+    func testTheRecordingBar() throws {
+        // 2026-11-25: the user could not tell which mode it was in; the notes window now shows it.
+        let room = RecordingBar.of(try decode(#"{"recording": true, "mode": "room", "started_at": 100}"#))
+        XCTAssertEqual(room, RecordingBar(state: "recording", mode: "mode_short_room", switchTo: "mode_switch_call",
+                                          action: "stop", switchMode: "call"))
+        let call = RecordingBar.of(try decode(#"{"recording": true, "mode": "call"}"#))
+        XCTAssertEqual(call.mode, "mode_short_call")
+        XCTAssertEqual(call.switchMode, "room")
+        let idle = RecordingBar.of(try decode(#"{"recording": false, "mode": ""}"#))
+        XCTAssertEqual(idle, RecordingBar(state: "not_recording", mode: nil, switchTo: nil, action: "start", switchMode: nil))
+        XCTAssertEqual(RecordingBar.elapsed(since: 100, now: 3_823), "1:02:03")
+        XCTAssertEqual(RecordingBar.elapsed(since: 0, now: 50), "")
+    }
+
     func testNonObjectFails() {
         XCTAssertThrowsError(try decode("[]"))
         XCTAssertThrowsError(try decode("not json"))

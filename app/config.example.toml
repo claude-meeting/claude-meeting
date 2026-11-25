@@ -16,8 +16,9 @@ auto_record = true        # start recording when another app uses the microphone
 start_after_secs = 6      # mic must be in use this long before recording starts
 stop_after_secs = 30      # mic must be free this long before recording stops
 cooldown_secs = 20
-call_audio_lost_secs = 120  # the call's audio recorded as silence this long, with nothing transcribed: restart
-call_audio_restarts = 1     # restarts per call; after that only a notification (0: never restart)
+call_audio_lost_secs = 120  # the call's audio recorded as silence this long, nobody on the call transcribed: restart
+call_audio_restarts = 3     # restarts per call, each after a longer wait; then only a notification (0: never)
+fill_call_gaps = true       # after a meeting, add what the call said that the live transcript missed (saved stem)
 ignore_apps = []          # extra bundle-id prefixes that never count as a call
 manual_mode = "auto"      # a recording started from the menu: "auto" (room mode when there is no call and your
                           # voiceprint is recorded, with [voice] verify on), "room" (an in-person meeting, or a phone on speaker: every voice on the

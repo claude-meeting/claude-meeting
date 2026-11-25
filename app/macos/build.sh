@@ -294,4 +294,9 @@ if [ "${1:-}" = "--install" ]; then
     "$LSREGISTER" -f "$HOME/Applications/$(basename "$BUNDLE")" || true   # its name and icon as they are now
   fi
   echo "installed $HOME/Applications/$(basename "$BUNDLE")"
+  # A running copy goes on running the old app (2026-11-20: five days of the old menu): open the new one, which
+  # replaces it (SingleInstance). Recording goes on: the engine is a background service.
+  if pgrep -qf "$(basename "$BUNDLE")/Contents/MacOS/" 2>/dev/null; then
+    open -n "$HOME/Applications/$(basename "$BUNDLE")" && echo "reopened the running app"
+  fi
 fi

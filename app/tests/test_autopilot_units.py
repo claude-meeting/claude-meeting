@@ -4,6 +4,7 @@ the periodic analysis. The module is imported inside a Sandbox, so every externa
 import json
 import os
 import struct
+import subprocess
 import sys
 import time
 import unittest
@@ -833,8 +834,9 @@ class CopilotNotes(Base):
         os.utime(d / "frame-1001.jpg", (time.time() - 1, time.time() - 1))
         os.utime(d / "frame-1002.jpg", (time.time() - 1, time.time() - 1))
         text, images = cp._new_screen_text()
-        self.assertIn("OCR frame-1000.jpg", text)
-        self.assertEqual(len(images), 2)                                      # the third frame equals the second
+        self.assertIn("OCR frame-1001.jpg", text)                             # only the newest changed frame is read
+        self.assertNotIn("frame-1000", text)
+        self.assertEqual([Path(p).name for p in images], ["frame-1001.jpg"])   # the frame read (the third equals it)
         text, images = cp._new_screen_text()
         self.assertEqual((text, images), ("", []))                           # nothing changed since
         ap.SCREEN["enabled"] = False
@@ -886,6 +888,7 @@ class CallAudio(Base):
         self.voice = self.sb.home / ".minutes" / "current.voice.wav"
         self.watch = self.ap.CallAudioWatch()
         self.now = 1_000_000.0
+        self.watch.since = self.now                                        # the call began (the main loop sets it)
 
     def add(self, secs, kind="zero", mic="noise"):
         """Append to the call stem (sound, zeros, or shreds: 11 ms of sound in every 55) and to the microphone
@@ -901,9 +904,9 @@ class CallAudio(Base):
         with open(self.voice, "ab") as f:
             f.write(bytes(b | 1 for b in os.urandom(n * 2)) if mic == "noise" else b"\0" * n * 2)
 
-    def check(self, transcript=None, step=10):
+    def check(self, transcript=None, step=10, call_on=None):
         self.now += step
-        return self.watch.silent_secs(self.now, transcript)
+        return self.watch.silent_secs(self.now, transcript, call_on)
 
     def test_lost_after_the_call_was_heard(self):
         self.add(30, "sound")
@@ -958,16 +961,130 @@ class CallAudio(Base):
             self.add(3, "sound")
         self.assertEqual(self.check(), 0)
 
-    def test_not_lost_while_someone_is_transcribed(self):
-        # The other side is silent but the user presents: the user's lines show it is a quiet call.
+    def test_not_lost_while_the_call_is_transcribed(self):
         transcript = self.sb.state / "rec.jsonl"
         self.add(30, "sound")
         self.check(transcript)
         self.add(130)
         ts = __import__("datetime").datetime.fromtimestamp(self.now - 30).isoformat(timespec="seconds")
-        transcript.write_text(json.dumps({"ts": ts, "speaker": "我", "text": "接下來看第二頁"}) + "\n")
+        transcript.write_text(json.dumps({"ts": ts, "speaker": "其他人", "track": "system", "text": "好"}) + "\n")
         self.assertEqual(self.check(transcript), 0)
         self.assertGreaterEqual(self.check(transcript, step=200), 120)   # nothing new for 120 s: lost
+
+    def user_line(self, transcript, ago=30):
+        ts = __import__("datetime").datetime.fromtimestamp(self.now - ago).isoformat(timespec="seconds")
+        transcript.write_text(json.dumps({"ts": ts, "speaker": "我", "track": "voice", "text": "接下來看第二頁"}) + "\n")
+
+    def overload(self, ago):
+        log = self.sb.home / ".minutes" / "logs" / "minutes.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        at = __import__("datetime").datetime.fromtimestamp(self.now - ago).astimezone().isoformat()
+        log.write_text('{"level":"warn","message":"audio input overload: possible audio gaps","ts":"%s"}\n' % at)
+
+    def test_the_user_presenting_to_a_quiet_call_is_no_fault_unless_minutes_overloaded(self):
+        # Others muted while the user presents: the call stem is quiet, nothing is lost. Every lost capture seen
+        # (2026-11-24/25) came with Minutes' audio input overload warnings.
+        transcript = self.sb.state / "rec.jsonl"
+        self.add(30, "sound")
+        self.check(transcript)
+        self.add(130)
+        self.user_line(transcript)
+        self.assertEqual(self.check(transcript), 0)
+        self.overload(ago=5)                                               # during this call
+        self.assertGreaterEqual(self.check(transcript), 120)
+
+    def test_a_call_never_heard_is_lost_after_minutes_overloaded(self):
+        # 2026-11-25: the call's audio never reached Minutes from the very start, with overloads in its first half
+        # minute. Presenting to a call whose others are muted from the start shows the same silence, no overload.
+        transcript = self.sb.state / "rec.jsonl"
+        self.add(130)
+        self.user_line(transcript)
+        self.assertEqual(self.check(transcript, call_on=lambda: True), 0)  # presenting, no overload: no fault
+        self.overload(ago=5)                                               # during this call
+        self.assertEqual(self.check(transcript), 0)                        # no call going on: nothing lost
+        self.assertGreaterEqual(self.check(transcript, call_on=lambda: True), 120)   # a call app or a web call
+        self.assertEqual(self.check(transcript, call_on=lambda: False), 0)
+
+    def test_an_overload_before_this_call_does_not_count(self):
+        transcript = self.sb.state / "rec.jsonl"
+        self.overload(ago=30)                                              # 30 s before this call began
+        self.add(130)
+        self.user_line(transcript)
+        self.assertEqual(self.check(transcript, call_on=lambda: True), 0)
+
+    def test_alone_in_a_call_waiting_for_the_others_is_no_fault(self):
+        transcript = self.sb.state / "rec.jsonl"
+        transcript.write_text("")
+        self.add(130)
+        self.assertEqual(self.check(transcript, call_on=lambda: True), 0)
+        self.overload(ago=5)                                               # 2026-11-25: overloads from the start
+        self.assertGreaterEqual(self.check(transcript, call_on=lambda: True), 120)
+
+    def test_minutes_overload_is_read_from_its_log(self):
+        ap = self.ap
+        log = self.sb.home / ".minutes" / "logs" / "minutes.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        self.assertFalse(ap.minutes_overloaded())                          # no log
+        at = __import__("datetime").datetime.fromtimestamp(1000.0).astimezone().isoformat()
+        log.write_text('{"level":"info","message":"started","ts":"%s"}\n' % at
+                       + '{"level":"warn","message":"audio input overload: possible audio gaps","step":'
+                       '"audio_input_overload","ts":"%s","xruns":2}\n' % at)
+        self.assertTrue(ap.minutes_overloaded(now=1030.0))
+        self.assertFalse(ap.minutes_overloaded(now=1000.0 + ap.OVERLOAD_SECS + 1))
+
+    def test_no_room_for_now_without_a_voiceprint(self):
+        # A room without the user's voiceprint counts the user as someone else.
+        ap = self.ap
+        ap.MODE.start("call")
+        self.assertFalse(self.watch.fall_back())
+        self.assertEqual(ap.MODE.now, "call")
+        vp = self.sb.home / ".config" / "meeting-copilot" / "voiceprint.json"
+        vp.parent.mkdir(parents=True, exist_ok=True)
+        vp.write_text("{}")
+        self.assertTrue(self.watch.fall_back())
+        self.assertEqual(ap.MODE.now, "room")
+        self.watch.sound_reads = 1
+        self.assertFalse(self.watch.back())                                # one read back is not back
+        self.assertFalse(self.watch.back())                                # nor the same read again
+        self.watch.sound_reads = 3
+        self.assertTrue(self.watch.back())                                 # three reads in a row
+        self.assertEqual(ap.MODE.now, "call")
+        self.assertFalse(self.watch.quiet)                                 # alerts on the switches so far
+        for _ in range(ap.CallAudioWatch.MAX_BACKS):                       # a capture that keeps breaking
+            self.watch.fall_back()
+            self.watch.back()
+        self.assertTrue(self.watch.quiet)                                  # no alert on the last back, nor after
+        self.assertEqual(ap.MODE.now, "room")                              # no more quick flips
+        self.assertFalse(self.watch.back())
+        self.watch.sound_reads = ap.CallAudioWatch.LONG_BACK_READS
+        self.assertTrue(self.watch.back())                                 # back for good: call mode again
+        self.assertEqual(ap.MODE.now, "call")
+
+    def test_only_a_browser_holding_webrtc_is_a_web_call(self):
+        # Discord, Slack and other apps on Chromium hold the same assertion: they must not keep a recording going.
+        ap = self.ap
+        saved = ap.run
+        line = '   pid 1({}): [0x1] 00:01:00 NoIdleSleepAssertion named: "WebRTC has active PeerConnections"'
+        try:
+            for owner, expected in (("Google Chrome", True), ("Microsoft Edge Helper", True), ("Vivaldi", True),
+                                    ("Arc", True), ("Dia", True), ("Discord", False), ("Slack", False),
+                                    ("Dialpad", False), ("Arcade", False)):    # whole names, not their letters
+                ap.run = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": line.format(owner)})()
+                self.assertEqual(ap.browser_call(browsers_only=True), expected, owner)   # keeps a muted call going
+                self.assertTrue(ap.browser_call(), owner)                  # a call all the same (mode, lost audio)
+            ap.run = lambda *a, **k: None                                  # pmset timed out (a busy Mac)
+            self.assertIsNone(ap.browser_call(browsers_only=True))         # unknown: the auto stop waits
+        finally:
+            ap.run = saved
+
+    def test_each_restart_waits_longer(self):
+        ap = self.ap
+        self.watch.restarted(1000.0)
+        self.assertEqual((self.watch.restarts, self.watch.next_try), (1, 1000.0 + ap.CALL_AUDIO_LOST_SECS))
+        self.watch.restarted(2000.0)
+        self.assertEqual(self.watch.next_try, 2000.0 + 2 * ap.CALL_AUDIO_LOST_SECS)
+        self.watch.end_call()
+        self.assertEqual((self.watch.restarts, self.watch.next_try), (0, 0.0))
 
     def test_isolated_spikes_are_not_sound(self):
         # A broken capture can deliver ~16 isolated 2 ms spikes a second (6-10 % non-zero samples), which kept
@@ -1088,6 +1205,162 @@ class MeetingRecordFromOurTranscript(Base):
         self.assertIn("whisper", other.read_text())
         self.assertEqual(ap.MeetingRecord().done, {ours.name, other.name})    # remembered across restarts
 
+    def test_a_fill_is_stopped_when_a_recording_begins(self):
+        ap = self.ap
+        record = ap.MeetingRecord()
+        part = ap.LIVE_TRANSCRIPTS / f"rec-{self.START}.jsonl"
+        part.parent.mkdir(parents=True, exist_ok=True)
+        part.write_text("")
+        md = self.meeting("2025-01-18-call.md", self.START + 1)
+        record.proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        record.filling, record.target, record.filling_key = md, md, part.name
+        record.filled.add(part.name)
+        proc = record.proc
+        record.poll(processing=False, recording=True)
+        self.assertIsNone(record.proc)
+        self.assertIsNotNone(proc.wait(5))                                 # stopped
+        self.assertNotIn(part.name, record.filled)                         # looked at again later
+
+    def test_a_fill_that_cannot_start_does_not_hold_the_record_up(self):
+        ap = self.ap
+        part = ap.LIVE_TRANSCRIPTS / f"rec-{self.START}.jsonl"
+        part.parent.mkdir(parents=True, exist_ok=True)
+        part.write_text(json.dumps({"start": 1.0, "end": 2, "speaker": "我", "text": "有人嗎"}, ensure_ascii=False) + "\n")
+        saved, popen = ap.minutes_record.saved_stem, ap.subprocess.Popen
+        ap.minutes_record.saved_stem = lambda meetings, epoch, suffix=".system.wav": self.sb.root / "x.system.wav"
+
+        def broken(args, **kw):
+            if any(str(ap.FILL_CALL_GAPS) == str(a) for a in args):
+                raise OSError("no such file")
+            return popen(args, **kw)
+        try:
+            record = ap.MeetingRecord()
+            record.since = time.time() - 120
+            md = self.meeting("2025-01-16-call.md", self.START + 1)
+            ap.subprocess.Popen = broken
+            record.poll(processing=False)                                  # tried once, then the record
+            self.assertEqual(record.filled, {part.name})
+            self.assertIn("有人嗎", md.read_text())
+        finally:
+            ap.minutes_record.saved_stem, ap.subprocess.Popen = saved, popen
+            if record.proc:
+                record.proc.wait(10)
+
+    def test_a_meeting_in_parts_is_filled_at_once_and_again_for_a_part_added_later(self):
+        ap = self.ap
+        a, b, c = (ap.LIVE_TRANSCRIPTS / f"rec-{self.START + i * 600}.jsonl" for i in range(3))
+        a.parent.mkdir(parents=True, exist_ok=True)
+        for t in (a, b, c):
+            t.write_text("")
+        ap.minutes_record.mark_part(b, a)
+        first = self.meeting("2025-01-19-call.md", self.START + 1)
+        saved, fill = ap.minutes_record.saved_stem, ap.FILL_CALL_GAPS
+        ap.minutes_record.saved_stem = lambda meetings, epoch, suffix=".system.wav": self.sb.root / "x.system.wav"
+        ap.FILL_CALL_GAPS = self.sb.root / "noop.py"
+        ap.FILL_CALL_GAPS.write_text("import sys\nprint(sys.argv[1])\n")
+        try:
+            record = ap.MeetingRecord()
+            record.since = time.time() - 120
+            self.assertTrue(record._fill(first, time.time()))
+            self.assertEqual(record.filled, {f"{a.name},{b.name}"})        # both parts, one run
+            self.assertEqual(record.target, first)                          # from the first part's file
+            record.proc.wait(10)
+            record.poll(processing=False)
+            self.assertIsNone(record._fill(first, time.time()))             # filled already
+            ap.minutes_record.mark_part(c, a)                               # a part added later
+            record.proc = None
+            self.assertTrue(record._fill(first, time.time()))
+            self.assertIn(f"{a.name},{b.name},{c.name}", record.filled)
+            record.proc.wait(10)
+        finally:
+            ap.minutes_record.saved_stem, ap.FILL_CALL_GAPS = saved, fill
+
+    def test_beside_a_recording_the_record_is_written_and_filled_after_it(self):
+        # The speech models beside a recording overload Minutes, which then loses the call's audio; the meeting
+        # before (back-to-back calls) still gets its record at once.
+        ap = self.ap
+        live = ap.LIVE_TRANSCRIPTS / f"rec-{self.START}.jsonl"
+        live.parent.mkdir(parents=True, exist_ok=True)
+        live.write_text(json.dumps({"start": 1.0, "end": 2, "speaker": "我", "text": "有人嗎"}, ensure_ascii=False) + "\n")
+        wrote = self.sb.root / "wrote"
+        filler = self.sb.root / "fill.py"                    # adds its line once, then takes long (stopped there)
+        filler.write_text("import json, pathlib, time\n"
+                          f"live = pathlib.Path({str(live)!r})\n"
+                          "if '補上的話' not in live.read_text():\n"
+                          "    with live.open('a') as f:\n"
+                          "        f.write(json.dumps({'start': 5.0, 'end': 7, 'speaker': '其他人', 'track': 'system', "
+                          "'text': '補上的話', 'recovered': True}, ensure_ascii=False) + '\\n')\n"
+                          f"    pathlib.Path({str(wrote)!r}).touch()\n"
+                          "    time.sleep(30)\n")
+        saved, fill = ap.minutes_record.saved_stem, ap.FILL_CALL_GAPS
+        ap.minutes_record.saved_stem = lambda meetings, epoch, suffix=".system.wav": self.sb.root / "x.system.wav"
+        ap.FILL_CALL_GAPS = filler
+        record = None
+        try:
+            record = ap.MeetingRecord()
+            record.since = time.time() - 120
+            md = self.meeting("2025-01-17-call.md", self.START + 1)
+            before = live.stat().st_size
+            record.poll(processing=False, recording=True)                 # the record now, without filling
+            self.assertIn("有人嗎", md.read_text())
+            self.assertIsNone(record.filling)
+            self.assertEqual(record.target, md)                            # being resummarized
+            record.proc.wait(10)
+            record.poll(processing=False, recording=True)
+            self.assertIsNone(record.proc)                                 # nothing more while it records
+            os.utime(md, (time.time() - 60, time.time() - 60))
+            record.poll(processing=False)                                  # the recording ended: the gaps
+            self.assertEqual(record.filling, md)
+            for _ in range(100):                                           # it added its line, then
+                if wrote.exists():
+                    break
+                time.sleep(0.1)
+            self.assertTrue(wrote.exists())
+            record.poll(processing=False, recording=True)                  # another recording stopped it
+            self.assertIsNone(record.proc)
+            self.assertEqual(list(record.deferred.values())[0][1], {live: before})   # the sizes from before
+            record.poll(processing=False)                                  # after that one: run again, adds
+            self.assertEqual(record.filling, md)                           # nothing this time
+            record.proc.wait(10)
+            record.poll(processing=False)                                  # the first run's line: written
+            self.assertIn("補上的話", md.read_text())
+            record.proc.wait(10)
+            record.poll(processing=False)
+            self.assertEqual(record.deferred, {})
+        finally:
+            ap.minutes_record.saved_stem, ap.FILL_CALL_GAPS = saved, fill
+            if record and record.proc and record.proc.poll() is None:
+                record.proc.kill()                                         # a failed check: no process left over
+                record.proc.wait()
+
+    def test_the_calls_missed_speech_is_filled_in_before_the_record(self):
+        # G-10: the live call stem was silent while the call went on; the stem Minutes saved has it.
+        ap = self.ap
+        live = ap.LIVE_TRANSCRIPTS / f"rec-{self.START}.jsonl"
+        live.parent.mkdir(parents=True, exist_ok=True)
+        live.write_text(json.dumps({"start": 1.0, "end": 2, "speaker": "我", "text": "有人嗎"}, ensure_ascii=False) + "\n")
+        filler = self.sb.root / "fill.py"                                  # stands for tools/fill_call_gaps.py
+        filler.write_text("import json, sys\nassert '--no-record' in sys.argv and '--stems-only' in sys.argv\n"
+                          f"open({str(live)!r}, 'a').write(json.dumps({{'start': 5.0, 'end': 7, 'speaker': '其他人', "
+                          "'track': 'system', 'text': '補上的話', 'recovered': True}, ensure_ascii=False) + '\\n')\n")
+        saved, fill = ap.minutes_record.saved_stem, ap.FILL_CALL_GAPS
+        ap.minutes_record.saved_stem = lambda meetings, epoch, suffix=".system.wav": self.sb.root / "x.system.wav"
+        ap.FILL_CALL_GAPS = filler
+        try:
+            record = ap.MeetingRecord()
+            record.since = time.time() - 120
+            md = self.meeting("2025-01-16-call.md", self.START + 1)
+            record.poll(processing=False)                                 # filling first
+            self.assertIn("whisper", md.read_text())
+            record.proc.wait(10)
+            record.poll(processing=False)                                 # then the record, with the filled line
+            self.assertIn("補上的話", md.read_text())
+            record.proc.wait(10)
+            record.poll(processing=False)
+            self.assertEqual(record.filled, {live.name})
+        finally:
+            ap.minutes_record.saved_stem, ap.FILL_CALL_GAPS = saved, fill
+
     def test_a_restarted_recording_is_one_meeting_record(self):
         # The call's audio was lost and the recording restarted: one meeting must not get two records.
         ap = self.ap
@@ -1138,6 +1411,30 @@ class MeetingRecordFromOurTranscript(Base):
         one = self.meeting("2025-01-20-call.md", first)
         record.poll(processing=False)
         self.assertIn("[Alex 0:01] 好\n（通話聲音中斷", one.read_text())
+
+    def test_without_the_first_parts_file_the_earliest_file_stays_the_record(self):
+        ap = self.ap
+        epochs = (self.START, self.START + 600, self.START + 1200)
+        parts = [ap.LIVE_TRANSCRIPTS / f"rec-{e}.jsonl" for e in epochs]
+        parts[0].parent.mkdir(parents=True, exist_ok=True)
+        for i, t in enumerate(parts):
+            t.write_text(json.dumps({"start": 1.0, "end": 2, "speaker": "我", "text": f"第{i}段"},
+                                    ensure_ascii=False) + "\n")
+            os.utime(t, (time.time() - 4000, time.time() - 4000))
+        ap.minutes_record.mark_part(parts[1], parts[0])                    # the first part's file never came
+        record = ap.MeetingRecord()
+        record.since = time.time() - 120
+        one = self.meeting("2025-01-21-call.md", epochs[1])
+        record.poll(processing=False)
+        record.proc.wait(10)
+        record.poll(processing=False)
+        ap.minutes_record.mark_part(parts[2], parts[0])                    # a later part
+        two = self.meeting("2025-01-21-call-2.md", epochs[2])
+        record.poll(processing=False)
+        record.proc.wait(10)
+        self.assertTrue(one.exists())                                       # still the record
+        self.assertIn("第2段", one.read_text())
+        self.assertTrue((self.sb.meetings / ".parts" / two.name).exists())
 
     def test_meeting_files_from_before_are_left_alone(self):
         live = self.ap.LIVE_TRANSCRIPTS / f"rec-{self.START}.jsonl"
@@ -1405,6 +1702,9 @@ class RoomModeInTheEngine(Base):
         vp.write_text("{}")
         self.assertEqual(ap.RecordingMode.for_manual_start([]), ("room", False))
         self.assertEqual(ap.RecordingMode.for_manual_start(["us.zoom.xos"]), ("call", False))
+        self.sb.flag("browser-call")                                       # muted in a web call
+        self.assertEqual(ap.RecordingMode.for_manual_start([]), ("call", False))
+        self.sb.flag("browser-call", False)
         ap.CFG["autopilot"]["manual_mode"] = "room"
         try:
             self.assertEqual(ap.RecordingMode.for_manual_start(["us.zoom.xos"]), ("room", True))   # the user's

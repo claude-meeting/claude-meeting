@@ -55,6 +55,7 @@ AUTO_FLAG = STATE / "auto-recording"   # title of the recording autopilot starte
 # Helpers and system commands: MEETING_COPILOT_BIN can replace any of them (tests run against fakes).
 MINUTES = config.tool("minutes", BASE / "bin" / "minutes")
 LIVE_TRANSCRIBER = config.tool("live_transcriber.py", BASE / "bin" / "live_transcriber.py")
+FILL_CALL_GAPS = config.tool("fill_call_gaps.py", BASE / "tools" / "fill_call_gaps.py")
 SCREEN_VIDEO = config.tool("screen_video.py", BASE / "bin" / "screen_video.py")
 RETENTION = config.tool("retention.py", BASE / "bin" / "retention.py")
 FRAMES_TO_VIDEO = config.tool("frames-to-video", BASE / "bin" / "frames-to-video")
@@ -105,7 +106,8 @@ POLL_SECS = float(os.environ.get("MEETING_COPILOT_POLL_SECS") or 2)
 MAX_LOOPS = int(os.environ["MEETING_COPILOT_MAX_LOOPS"]) if os.environ.get("MEETING_COPILOT_MAX_LOOPS") else None  # tests
 STEMS_GRACE_SECS = 30     # a recording without stem files after this long has none: use Minutes' transcript
 CALL_AUDIO_LOST_SECS = CFG["autopilot"].get("call_audio_lost_secs", 120)   # 0 turns the check off
-CALL_AUDIO_RESTARTS = CFG["autopilot"].get("call_audio_restarts", 1)
+CALL_AUDIO_RESTARTS = CFG["autopilot"].get("call_audio_restarts", 3)
+FILL_GAPS = CFG["autopilot"].get("fill_call_gaps", True)   # after a meeting: its missed call speech, from the saved stem
 START_AFTER_SECS = CFG["autopilot"]["start_after_secs"]   # other app must hold the mic this long
 STOP_AFTER_SECS = CFG["autopilot"]["stop_after_secs"]     # mic free this long before we stop
 COOLDOWN_SECS = CFG["autopilot"]["cooldown_secs"]         # after stopping, ignore mic use briefly
@@ -364,14 +366,71 @@ def mic_users():
 
 
 BROWSER_CALL = "WebRTC has active PeerConnections"   # Chrome's power assertion while a web call is connected
+# Chromium browsers, by process name (the WebRTC assertion's owner) and bundle id (a microphone user): a browser's
+# call keeps its recording going while the user is muted (auto stop); an app's (Discord, Slack) does not.
+BROWSERS = {"Google Chrome": "com.google.Chrome", "Chromium": "org.chromium.Chromium",
+            "Microsoft Edge": "com.microsoft.edgemac", "Arc": "company.thebrowser.Browser",
+            "Brave Browser": "com.brave.Browser", "Vivaldi": "com.vivaldi.Vivaldi", "Opera": "com.operasoftware.Opera",
+            "Dia": "company.thebrowser.dia", "Comet": "ai.perplexity.comet",
+            "Yandex": "ru.yandex.desktop.yandex-browser"}   # process name (or its first words) -> bundle id
+BROWSER_NAMES = tuple(BROWSERS)
+BROWSER_CHECK_SECS = 10        # pmset read at most this often by the main loop (in a muted call, every pass asks)
 
 
-def browser_call():
+MINUTES_LOG = HOME / ".minutes" / "logs" / "minutes.log"
+OVERLOAD_SECS = 60
+OVERLOAD_LOOKBACK_SECS = 600   # a call heard, then silent while the user talks: lost only after overloads this recent
+BROWSER_IDS = tuple(b.lower() for b in BROWSERS.values())   # compared in lower case: helpers differ
+# Chromium browsers: their WebRTC power assertion (browser_call) shows a web call, muted too; Safari and Firefox keep
+# none. Known limit: another tab holding WebRTC after the call ended keeps the recording going (stop it by hand); a
+# guard on the call's audio stopped calls whose capture had broken, the case this exists for.
+
+
+def minutes_overloaded(now=None, secs=None, tail=65536):
+    """Whether Minutes logged "audio input overload" in the last `secs` (OVERLOAD_SECS): its capture cannot keep up,
+    and the call's audio was lost after such warnings (2026-11-24, 11-25)."""
+    now = time.time() if now is None else now
+    secs = OVERLOAD_SECS if secs is None else secs
+    try:
+        with open(MINUTES_LOG, "rb") as f:
+            f.seek(max(0, f.seek(0, 2) - tail))
+            tail = f.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    for line in reversed(tail.splitlines()):
+        if "audio_input_overload" not in line and "audio input overload" not in line:
+            continue
+        try:
+            ts = datetime.fromisoformat(json.loads(line)["ts"]).timestamp()
+        except (ValueError, KeyError, TypeError):
+            continue
+        return now - ts < secs
+    return False
+
+
+def webrtc_owners():
+    """The process names holding Chrome's web-call assertion; None when pmset gives no answer (a busy Mac)."""
+    r = run([PMSET, "-g", "assertions"], timeout=5)
+    if not r or r.returncode != 0:
+        return None
+    owners = []
+    for line in r.stdout.splitlines():         # "pid 30898(Google Chrome): [...] named: "WebRTC has ...""
+        if BROWSER_CALL in line:
+            owner = re.search(r"pid \d+\(([^)]*)\)", line)
+            owners.append(owner.group(1) if owner else "")
+    return owners
+
+
+def browser_call(browsers_only=False, owners=False):
     """Whether a browser holds a call (Meet, Teams on the web): Chrome keeps a power assertion while connected,
     with the microphone off too. In a web call joined with the microphone off no app holds the microphone, and
-    without this check lost call audio would be taken for the silence after a call."""
-    r = run([PMSET, "-g", "assertions"], timeout=5)
-    return bool(r and r.returncode == 0 and BROWSER_CALL in r.stdout)
+    without this check lost call audio would be taken for the silence after a call. None: unknown (no answer).
+    `owners`: webrtc_owners() read already."""
+    owners = webrtc_owners() if owners is False else owners
+    if owners is None:
+        return None                            # unknown, not "no call"
+    # browsers_only: a browser's call, not an app's (Discord, Slack)
+    return any(not browsers_only or any(n == b or n.startswith(b + " ") for b in BROWSER_NAMES) for n in owners)
 
 
 def status():
@@ -419,7 +478,7 @@ class RecordingMode:
         self.session, self.file_wins, self.started_here = None, file_wins, not file_wins
         log(f"recording mode: {self.now}" + (" (chosen)" if by_user else ""))
 
-    def set(self, mode, by_user):
+    def set(self, mode, by_user, why=None):
         if mode not in self.MODES:
             return False
         self.by_user = by_user
@@ -428,7 +487,8 @@ class RecordingMode:
         if mode == self.now:
             self.write()
             return False
-        log(f"recording mode: {self.now} -> {mode} ({'from the app' if by_user else 'a call app took the microphone'})")
+        log(f"recording mode: {self.now} -> {mode} "
+            f"({why or ('from the app' if by_user else 'a call app took the microphone')})")
         self.now = mode
         self.write()
         return True
@@ -466,12 +526,13 @@ class RecordingMode:
     @staticmethod
     def for_manual_start(call_apps):
         """The mode of a recording the user started, and whether the user chose it ([autopilot] manual_mode;
-        "auto": a call when a call app has the microphone, and when the user has no voiceprint, which is what tells
-        the user apart in a room; else a room)."""
+        "auto": a call when a call app has the microphone or a browser holds a call (the user muted in a web call:
+        no app holds the microphone, 2026-11-25), and when the user has no voiceprint, which is what tells the user
+        apart in a room; else a room)."""
         choice = CFG["autopilot"].get("manual_mode", "auto")
         if choice in RecordingMode.MODES:
             return choice, True
-        if call_apps or config.voiceprint_file(CFG) is None:
+        if call_apps or config.voiceprint_file(CFG) is None or browser_call():
             return "call", False
         return "room", False
 
@@ -972,36 +1033,153 @@ class MeetingRecord:
             data = {}
         self.since = data.get("since") or time.time()
         self.done = set(data.get("done", []))
+        self.filled = set()                   # sets of parts whose call gaps were looked for (lib/call_gaps.py)
+        self.look_again = {}                  # meeting file -> when a waiting one is looked at again
         self.proc = None
         self.target = None
+        self.filling = None                   # the meeting file being filled from, while self.proc fills it
+        self.filling_key = None               # and its set of parts (self.filled)
+        # A refill (the record written already): the parts' sizes before any of its runs (grown: lines were added).
+        self.sizes = None
+        # Parts key -> (first meeting file, parts' sizes before): meetings whose record was written while a recording
+        # went on, their gaps to fill once it ends (no speech models beside a recording) and the record written again
+        # if lines were added. Not kept across restarts: tools/fill_call_gaps.py fills one by hand.
+        self.deferred = {}
         if not data:
             self._save()                      # older meeting files are never touched, across restarts too
 
     def _save(self):
         speakers.atomic_write(self.PATH, json.dumps({"since": self.since, "done": sorted(self.done)[-200:]}))
 
-    def poll(self, processing):
+    def poll(self, processing, recording=False):
+        self.recording = recording
         if self.proc:
             if self.proc.poll() is None:
+                if recording and self.filling:
+                    # A recording began: no speech models beside it (Minutes overloads). Looked at again after.
+                    log(f"call gaps of {self.filling.name}: stopped for a recording")
+                    self.proc.terminate()
+                    try:
+                        self.proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        self.proc.kill()
+                        self.proc.wait()
+                    self.filled.discard(self.filling_key)
+                    if self.sizes is not None:      # the sizes from before: lines it added count after
+                        self.deferred[self.filling_key] = (self.filling, self.sizes)
+                    self.proc = self.target = self.filling = self.sizes = None
                 return
-            log(f"meeting record {self.target.name}: summary rewritten (exit {self.proc.returncode})")
-            self.proc = self.target = None
+            if self.filling:
+                log(f"call gaps of {self.filling.name}: done (exit {self.proc.returncode})")
+                if self.sizes is not None and any(self._size(p) != n for p, n in self.sizes.items()):
+                    self.done.discard(self.filling.name)          # lines were added: its record is written again
+                    self._save()
+            else:
+                log(f"meeting record {self.target.name}: summary rewritten (exit {self.proc.returncode})")
+            self.proc = self.target = self.filling = self.sizes = None
         if processing or not LIVE_TRANSCRIPTS.is_dir():
             return
         now = time.time()
+        if self.deferred and not recording and not LIVE_ASR.running():
+            key, (first, sizes) = self.deferred.popitem()
+            if first.exists() and self._start_fill(first, key, sizes):
+                return
         for md in sorted(MEETINGS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime):
             mtime = md.stat().st_mtime
             if md.name in self.done or mtime < self.since or now - mtime < self.SETTLE_SECS:
                 continue
+            if now < self.look_again.get(md.name, 0):
+                continue
+            waiting = self._fill(md, now)
+            if waiting == "later":
+                self.look_again[md.name] = now + self.SETTLE_SECS
+                continue                      # this meeting waits (a part not written yet, or a recording)
+            if waiting:
+                return                        # filling a part's gaps first
             self.done.add(md.name)
+            self.look_again.pop(md.name, None)
             self._save()
             done = self._rebuild(md)
             if done is None:                  # a meeting recorded in parts, not all of them written yet
                 self.done.discard(md.name)
                 self._save()
+                self.look_again[md.name] = now + self.SETTLE_SECS
                 continue
             if done:
                 return
+
+    def _fill(self, md, now):
+        """Before the record is written: the call's speech the meeting missed (its call stem silent while live,
+        2026-11-24/25) is looked for in the stems Minutes saved, for all its parts, by tools/fill_call_gaps.py run on
+        its first file. Each set of parts is filled once (a part added later makes a new set). True while that runs;
+        "later" when this meeting waits (a part with no saved stem not written yet); None when done, when there is
+        nothing to do, or when a recording goes on (filled after it: self.deferred). Minutes saves a recording's stems before its meeting
+        file, so a written part with no call stem has none."""
+        if not FILL_GAPS:
+            return None
+        try:
+            started = minutes_record.meeting_start(md.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            return None
+        live = minutes_record.live_transcript(LIVE_TRANSCRIPTS, started) if started else None
+        if not live or live == LIVE_ASR.path:
+            return None
+        parts = minutes_record.parts(live) or [live]
+        key = ",".join(p.name for p in parts)
+        if key in self.filled or LIVE_ASR.path in parts:
+            return None                       # filled already, or the meeting goes on (_rebuild waits for it too)
+        def written(part):
+            epoch = minutes_record.epoch_of(part)
+            return (minutes_record.meeting_file(MEETINGS_DIR, epoch)
+                    or minutes_record.meeting_file(MEETINGS_DIR / ".parts", epoch))
+
+        stems = []
+        for part in parts:
+            stem = minutes_record.saved_stem(MEETINGS_DIR, minutes_record.epoch_of(part))
+            if stem is None:
+                try:
+                    young = now - part.stat().st_mtime < self.PART_WAIT_SECS
+                except OSError:
+                    young = False
+                if young and written(part) is None:
+                    return "later"            # Minutes has not written this part yet: its stems come with it
+            stems.append(stem)
+        if not any(stems):
+            self.filled.add(key)
+            return None
+        # The meeting's record: its earliest part's file there is (as _rebuild_parts).
+        first = next((f for f in map(written, parts) if f), md) if len(parts) > 1 else md
+        if getattr(self, "recording", False) or LIVE_ASR.running():
+            # No speech models beside a recording or its transcriber (Minutes overloads): the record is written
+            # now, its gaps filled once that recording ends, and the record written again if any were.
+            if key not in self.deferred:
+                self.deferred[key] = (first, {p: self._size(p) for p in parts})
+                log(f"call gaps of {first.name}: after the recording going on")
+            return None
+        log(f"call gaps of {first.name}: looking in {', '.join(s.name for s in stems if s)}")
+        return self._start_fill(first, key) or None
+
+    @staticmethod
+    def _size(path):
+        try:
+            return path.stat().st_size
+        except OSError:
+            return None
+
+    def _start_fill(self, first, key, sizes=None):
+        """Runs tools/fill_call_gaps.py on `first`; `sizes`: a refill's parts' sizes from before. False when it
+        could not start."""
+        self.filled.add(key)
+        try:
+            with open(STATE / "fill_call_gaps.log", "a") as out:
+                self.proc = subprocess.Popen([sys.executable, str(FILL_CALL_GAPS), str(first), "--apply",
+                                              "--no-record", "--stems-only"], stdin=subprocess.DEVNULL, stdout=out,
+                                             stderr=subprocess.STDOUT)
+        except OSError as e:
+            log(f"call gaps of {first.name}: could not start ({e!r}); the record is written without")
+            return False
+        self.filling, self.target, self.filling_key, self.sizes = first, first, key, sizes
+        return True
 
     @staticmethod
     def meeting_of(md):
@@ -1047,11 +1225,12 @@ class MeetingRecord:
         file gets the transcript of all of them, and the later parts' files move to .parts/ beside it."""
         if LIVE_ASR.path in parts:
             return None                                   # the meeting goes on
-        files = [minutes_record.meeting_file(MEETINGS_DIR, minutes_record.epoch_of(p)) for p in parts]
+        files = [minutes_record.meeting_file(MEETINGS_DIR, minutes_record.epoch_of(p))
+                 or minutes_record.meeting_file(MEETINGS_DIR / ".parts", minutes_record.epoch_of(p)) for p in parts]
         missing = [p for p, f in zip(parts, files) if f is None]
         if missing and time.time() - max(p.stat().st_mtime for p in missing) < self.PART_WAIT_SECS:
             return None                                   # Minutes is still writing a part's file
-        target = files[0] or md
+        target = next((f for f in files if f), md)   # the earliest part's file there is (stays the record)
         names = speakers.resolve_names(parts[-1], PEOPLE if STORE_VOICEPRINTS else None)   # carried part to part
 
         def label(row):
@@ -1065,7 +1244,7 @@ class MeetingRecord:
         target.write_text(new, encoding="utf-8")
         moved = []
         for f in files:
-            if f and f != target:
+            if f and f != target and f.parent.name != ".parts":        # not one moved there before
                 dest = MEETINGS_DIR / ".parts" / f.name
                 dest.parent.mkdir(exist_ok=True)
                 shutil.move(str(f), str(dest))
@@ -1097,7 +1276,9 @@ class MinutesJobs:
     PATH = STATE / "minutes-jobs.json"        # {"reported": [failed jobs already notified, oldest first]}
     MODEL_RETRY_SECS = 3600
     CHECK_SECS = 30
-    DONE = ("complete", "failed", "cancelled")   # every state Minutes ends a job in (tests/contracts.py checks)
+    # Every state Minutes ends a job in (tests/contracts.py checks). "needs-review": a recording with almost nothing
+    # in it (2026-11-25: 6 s started and stopped by mistake, 2 words), its raw capture kept and its file written.
+    DONE = ("complete", "failed", "cancelled", "needs-review")
 
     def __init__(self):
         try:
@@ -1311,11 +1492,14 @@ class StemLevels:
 
     def reset(self, key):
         self.key, self.offset, self.rate, self.blocks = key, 0, 0, []
+        self.latest_sound = False             # the newest full block was mostly sound
+        self.new_block = False                # the last read added a full block
 
     def read(self, window_secs):
         """(seconds covered, non-zero share) of the last window_secs, and whether any block just read was
         mostly sound (the capture works). None if the stem is missing or not a WAV file."""
         path = CURRENT_WAV.with_suffix(self.suffix)
+        self.new_block = False
         try:
             st = os.stat(path)
         except OSError:
@@ -1339,7 +1523,10 @@ class StemLevels:
         for i in range(0, len(samples), block):
             part = samples[i:i + block]
             nonzero = sound_samples(part, min_run)
-            sound = sound or (len(part) >= block // 2 and nonzero >= CallAudioWatch.HEARD_FRACTION * len(part))
+            full = len(part) >= block // 2 and nonzero >= CallAudioWatch.HEARD_FRACTION * len(part)
+            sound = sound or full
+            if len(part) >= block // 2:
+                self.latest_sound, self.new_block = full, True
             self.blocks.append((len(part), nonzero))
         window = window_secs * self.rate
         while self.blocks and sum(n for n, _ in self.blocks[1:]) >= window:
@@ -1360,14 +1547,22 @@ class CallAudioWatch:
       call's quiet stretches were zeros for up to ~15 s at a time, never minutes),
     - the microphone stem is not silent too (both all zeros is a paused or muted recording, which can last
       minutes before both come back by themselves),
-    - the call stem carried real audio earlier in this call,
-    - and nobody was transcribed meanwhile (when only the other side is quiet, the user's lines show up).
+    - nobody on the call was transcribed meanwhile,
+    - and either the call stem carried real audio earlier in this call, and the user is not talking meanwhile, or is
+      but Minutes reported audio input overload during this call (others quiet while the user presents is no fault;
+      every lost capture seen came with overloads, 2026-11-24/25),
+    - or it never did, a call is going on (a call app on the microphone, or a browser holding a call), and Minutes
+      reported audio input overload during it: a capture broken from the very start (2026-11-25, the whole call,
+      overloads in its first half minute); alone in a call, or presenting to it muted, is no fault.
     A call whose audio stops is caught about a minute later (the quiet minute before counts too). A working call
     can trigger in its last minutes, once the call has ended but the user is still in it: the same signature (no
-    audio from the call, nobody talking). A restart there costs one short, empty recording, so one restart per
-    call is the default."""
+    audio from the call). A restart there costs one short, empty recording. Restarts that do not bring the call
+    back are tried again, each after a longer wait (`next_try`), up to [autopilot] call_audio_restarts."""
 
     CHECK_SECS = 10
+    BACK_READS = 3             # room_fallback ends after this many reads in a row with the call's audio back
+    MAX_BACKS = 2              # a capture that keeps breaking: after this many, back only once back for longer,
+    LONG_BACK_READS = 18       # (3 minutes of reads in a row), and with no more alerts (`quiet`)
     LOST_FRACTION = 0.02       # non-zero samples in the call stem's window
     MIC_ALIVE_FRACTION = 0.5   # a working microphone's noise floor is non-zero nearly all the time
     HEARD_FRACTION = 0.5       # a block this full of sound shows that the capture worked
@@ -1378,19 +1573,65 @@ class CallAudioWatch:
     def end_call(self):
         """Nothing is recording: the next recording is a new call. Within one call, a restarted recording
         keeps what the first one showed (the call was heard), so a restart that did not help is noticed."""
-        self.restarts, self.heard, self.gave_up, self.last_check = 0, False, False, 0.0
+        self.restarts, self.heard, self.gave_up, self.last_check, self.next_try = 0, False, False, 0.0, 0.0
+        self.room_fallback = False     # room mode for now: the call's audio is lost for good (fall_back)
+        self.backs = 0                 # times the call's audio came back after room_fallback, this call
+        self.last_sound = False        # the newest block read of the call stem was mostly sound
+        self.sound_reads = 0           # reads in a row whose newest block was mostly sound
+        self.since = None              # when this call began (main loop: meeting_start): overloads before it are
+                                       # another's
         self.call, self.mic = StemLevels(".system.wav"), StemLevels(".voice.wav")
 
-    def silent_secs(self, now, transcript=None):
+    def count_sound(self):
+        """After a read of the call stem: reads in a row whose new block was mostly sound (a read that added no
+        whole block says nothing)."""
+        if self.call.new_block:
+            self.last_sound = self.call.latest_sound
+            self.sound_reads = self.sound_reads + 1 if self.last_sound else 0
+
+    def fall_back(self):
+        """The call's audio is lost and no restart is left: room mode for now, so the microphone keeps the others it
+        hears (the call through the Mac's speakers), unless the user chose the mode. True when it switched."""
+        if MODE.now != "call" or MODE.by_user or self.room_fallback or config.voiceprint_file(CFG) is None:
+            return False                                  # without a voiceprint a room counts the user as others
+        self.room_fallback = MODE.set("room", by_user=False, why="the call's audio is lost")
+        return self.room_fallback
+
+    @property
+    def quiet(self):
+        """The call's audio has come and gone too often to alert on each switch between call and room mode (the menu
+        and the notes window still show the mode). Read after the switch: the last alert is a loss."""
+        return self.backs >= self.MAX_BACKS
+
+    def back(self):
+        """While room_fallback: the call's audio came back, so call mode again. True when it switched."""
+        needed = self.BACK_READS if self.backs < self.MAX_BACKS else self.LONG_BACK_READS
+        if not self.room_fallback or self.sound_reads < needed:
+            return False                                  # back only once it stays back (a flaky capture flips)
+        self.backs += 1
+        self.room_fallback = False
+        self.gave_up = False                              # lost again later: noticed and handled again
+        if MODE.now == "room" and not MODE.by_user:
+            return MODE.set("call", by_user=False, why="the call's audio is back")
+        return False
+
+    def restarted(self, now):
+        """A restart was made: the next one waits longer (a capture that broke again may break again)."""
+        self.restarts += 1
+        self.next_try = now + CALL_AUDIO_LOST_SECS * (2 ** (self.restarts - 1))
+
+    def silent_secs(self, now, transcript=None, call_on=None):
         """Seconds of lost call audio (0 while the call is heard, the check is off, or the microphone is the room:
         there the call's audio is empty by nature). Reads only what Minutes added since the last call, at most every
         CHECK_SECS."""
         if CALL_AUDIO_LOST_SECS <= 0 or now - self.last_check < self.CHECK_SECS:
             return 0
+        since = self.since or now
         if MODE.now == "room":
             self.last_check = now
             self.call.read(CALL_AUDIO_LOST_SECS)          # read on, so a switch to a call starts from now
             self.mic.read(CALL_AUDIO_LOST_SECS)
+            self.count_sound()                            # the call's audio back, while room_fallback
             self.heard = False                            # a call after the room is lost only once it was heard
             return 0
         self.last_check = now
@@ -1399,17 +1640,28 @@ class CallAudioWatch:
             return 0
         (covered, share, sound), (mic_covered, mic_share, _) = call, mic
         self.heard = self.heard or sound
-        if (not self.heard or covered < CALL_AUDIO_LOST_SECS or share >= self.LOST_FRACTION
+        self.count_sound()
+        if (covered < CALL_AUDIO_LOST_SECS or share >= self.LOST_FRACTION
                 or mic_covered < CALL_AUDIO_LOST_SECS or mic_share < self.MIC_ALIVE_FRACTION):
             return 0
-        if transcript is not None:
-            rows = read_rows(transcript)
+        rows = read_rows(transcript) if transcript is not None else []
+
+        def lately(rs):
             try:
-                last = datetime.fromisoformat(rows[-1]["ts"]).timestamp() if rows else 0
+                return bool(rs) and now - datetime.fromisoformat(rs[-1]["ts"]).timestamp() < CALL_AUDIO_LOST_SECS
             except (KeyError, TypeError, ValueError):
-                last = 0
-            if now - last < CALL_AUDIO_LOST_SECS:
-                return 0
+                return False
+
+        if lately([r for r in rows if speakers.track_of(r) == "system"]):
+            return 0                                      # the call is heard
+        def overloaded():
+            return minutes_overloaded(now, min(OVERLOAD_LOOKBACK_SECS, max(0.0, now - since)), tail=524288)
+
+        if not self.heard:
+            if not (call_on and call_on()) or not overloaded():
+                return 0                                  # no call; or alone in it, or presenting to it muted
+        elif lately(rows) and not overloaded():
+            return 0                                      # the user presents, the others are quiet
         return int(covered)
 
 
@@ -1643,7 +1895,7 @@ class Copilot:
 
         Frames come from our full-resolution capture tool, one folder per display; if it is not
         running (e.g. no Screen Recording permission yet), from Minutes' own 1280-px screenshots
-        of the last 2 minutes. Returns (text, paths of every changed frame, oldest first).
+        of the last 2 minutes. Returns (text, paths of the frames read with new text, oldest first).
         """
         if not SCREEN.get("enabled", True):
             return "", []
@@ -1655,6 +1907,9 @@ class Copilot:
         else:
             sources = [SCREENS_DIR] if SCREENS_DIR.is_dir() else []
         events = []
+        overloaded = minutes_overloaded()     # the recording first: no OCR while Minutes cannot keep up
+        if overloaded:
+            log("screen text skipped: Minutes reports audio input overload")
         for src in sources:
             first = src not in watchers
             watcher = watchers.setdefault(src, screen.ScreenWatcher(SCREEN_OCR))
@@ -1663,7 +1918,8 @@ class Copilot:
                      else src.name)
             # Minutes' own screenshots are only a fallback: just the last two minutes of them. The same
             # window applies to a watcher's first look, so a restart does not re-read the whole meeting.
-            for e in watcher.poll(src, newer_than=time.time() - 120 if first or src == SCREENS_DIR else 0.0):
+            for e in watcher.poll(src, newer_than=time.time() - 120 if first or src == SCREENS_DIR else 0.0,
+                                  ocr=not overloaded):
                 e["label"] = label if len(sources) > 1 else ""
                 events.append(e)
         if not events:
@@ -1674,13 +1930,16 @@ class Copilot:
                 self.last_screen = e["text"][:SCREEN_MAX_CHARS]
         parts = []
         for e in events:
+            if e["kind"] == "frame":
+                continue                      # changed but not read: sent as an image only
             where = (f"（{e['label']}）" if i18n.chinese(LANG.family) else f" ({e['label']})") if e["label"] else ""
             head = LANG.t("screen_new_page" if e["kind"] == "new_page" else "screen_update", where=where)
             parts.append(f"{head}\n{e['text']}")
-        # Every changed frame also goes to Claude as an image (newest kept when over the cap):
-        # shared screens, camera tiles, charts and diagrams carry what OCR text cannot.
+        # Each frame read with new text also goes to Claude as an image (newest kept when over the cap): shared
+        # screens, charts and diagrams carry what OCR text cannot. Frames only seen to change (camera tiles move
+        # all the time in a video call) are not sent: as before, only a change in what the screen says is.
         cap = SCREEN.get("max_images_per_tick", 20) if SCREEN.get("send_images", True) and LLM.vision else 0
-        images = [e["path"] for e in events][-cap:] if cap else []
+        images = [e["path"] for e in events if e["kind"] != "frame"][-cap:] if cap else []
         return "\n\n".join(parts)[-SCREEN_MAX_CHARS:], images
 
     def tick(self, title):
@@ -1828,6 +2087,7 @@ def main():
     pending_done = None   # (stopped_at, title) while waiting for post-processing
     manual = False        # a recording started from the Mac app: stopped by the user, or with its call
     manual_call = False   # ...a call was on during it: when the call ends, so does the recording
+    web_call = False      # a browser had the microphone in this recording: its web-call sign keeps it going
     suppress_auto = False # the user stopped a recording while the call went on: no auto-start until it ends
     restart_requested = False   # the app changed the settings: exit when idle, launchd starts us again
     stop_retry_at = 0     # a failed `minutes stop` is tried again after a short wait
@@ -1856,11 +2116,22 @@ def main():
                 LANG.t("n_live_asr_stopped") if recording and LIVE_ASR.failed_notified else None) if p],
         })
 
+    pmset_read = [None, None]                 # [when, webrtc_owners()]: pmset can take seconds, asked every pass
+
+    def owners_now():
+        if pmset_read[0] is None or now - pmset_read[0] >= BROWSER_CHECK_SECS:
+            pmset_read[:] = [now, webrtc_owners()]
+        return pmset_read[1]
+
+    def in_browser_call(browsers_only=False):
+        return browser_call(browsers_only, owners=owners_now())
+
     loops = 0
     while MAX_LOOPS is None or loops < MAX_LOOPS:
         loops += 1
         try:
             now = time.time()
+
             users = mic_users()
             users_known = users is not None
             if not users_known:
@@ -1938,15 +2209,24 @@ def main():
             if recording:
                 safely("live transcriber", LIVE_ASR.ensure)
                 safely("capture watch", CAPTURE_WATCH.check)
-                if MODE.now == "room" and not MODE.by_user and users and MODE.set("call", by_user=False):
+                if (MODE.now == "room" and not MODE.by_user and users and not CALL_AUDIO.room_fallback
+                        and MODE.set("call", by_user=False)):
                     notify(LANG.t("n_mode_call"), LANG.t("n_mode_call_body"))
-                lost = safely("call audio", CALL_AUDIO.silent_secs, now, LIVE_ASR.path)
-                if lost and not users and not browser_call():
+                if CALL_AUDIO.back():
+                    log("call audio back: call mode again")
+                    if not CALL_AUDIO.quiet:
+                        notify(LANG.t("n_call_audio_back"), LANG.t("n_call_audio_back_body"))
+                CALL_AUDIO.since = meeting_start          # the call's start, a restart of the engine too
+                lost = safely("call audio", CALL_AUDIO.silent_secs, now, LIVE_ASR.path,
+                              lambda: bool(users) or in_browser_call())
+                if lost and not users and not in_browser_call():
                     lost = 0    # no call going on: its silence is no fault
+                if lost and now < CALL_AUDIO.next_try and CALL_AUDIO.restarts < CALL_AUDIO_RESTARTS:
+                    lost = 0    # restarted lately: the new recording gets longer before the next try
                 if lost and (auto_recording or manual) and CALL_AUDIO.restarts < CALL_AUDIO_RESTARTS:
                     # Minutes records, but the call's audio no longer reaches it: a new recording sets up the
                     # capture again. The first part is kept and processed as usual.
-                    CALL_AUDIO.restarts += 1
+                    CALL_AUDIO.restarted(now)
                     log(f"call audio silent for {lost} s: restarting the recording ({CALL_AUDIO.restarts})")
                     LIVE_ASR.carry_from = LIVE_ASR.path
                     publish(recording, False)
@@ -1961,7 +2241,12 @@ def main():
                     else:
                         log(f"call audio restart failed: {((r.stderr or r.stdout)[-160:] if r else 'error')}")
                         CALL_AUDIO.gave_up = True
-                        notify(LANG.t("n_call_audio_lost"), LANG.t("n_call_audio_lost_body", secs=lost), sound="Basso")
+                        if not stopped and status().get("recording") and CALL_AUDIO.fall_back():
+                            log("call audio lost for good: room mode for now")   # still recording, no call audio
+                            notify(LANG.t("n_call_audio_lost"), LANG.t("n_call_audio_room_body"), sound="Basso")
+                        else:
+                            notify(LANG.t("n_call_audio_lost"), LANG.t("n_call_audio_lost_body", secs=lost),
+                                   sound="Basso")
                         if stopped:      # stopped but not started again: the auto start takes the call back
                             auto_recording = manual = recording = False
                             AUTO_FLAG.unlink(missing_ok=True)
@@ -1971,7 +2256,12 @@ def main():
                     # Out of restarts, or a recording started in Minutes itself (not ours to restart).
                     CALL_AUDIO.gave_up = True
                     log(f"call audio silent for {lost} s: not restarting")
-                    notify(LANG.t("n_call_audio_lost"), LANG.t("n_call_audio_lost_body", secs=lost), sound="Basso")
+                    if CALL_AUDIO.fall_back():
+                        log("call audio lost for good: room mode for now")
+                        if not CALL_AUDIO.quiet:            # a capture that keeps breaking: no alert each time
+                            notify(LANG.t("n_call_audio_lost"), LANG.t("n_call_audio_room_body"), sound="Basso")
+                    else:
+                        notify(LANG.t("n_call_audio_lost"), LANG.t("n_call_audio_lost_body", secs=lost), sound="Basso")
                 safely("screen capture", SCREEN_CAP.ensure, LIVE_ASR.session)
                 safely("screen permission", SCREEN_CAP.check_permission)
             if (recording or draining) and COPILOT_ENABLED:
@@ -1982,6 +2272,7 @@ def main():
                 others_since = others_since or now
                 free_since = None
                 manual_call = manual_call or (manual and not MODE.room_kept)    # a chosen room: not its call
+                web_call = web_call or (recording and any(u.lower().startswith(BROWSER_IDS) for u in users))
             elif users_known:
                 others_since = None
                 free_since = free_since or now
@@ -2013,9 +2304,11 @@ def main():
                     notify(LANG.t("n_recording_failed"), LANG.t("n_recording_failed_body", title=title, reason=reason[:160]), sound="Basso")
 
             # Auto stop: recordings we started, and those started from the app whose call has ended
-            # A room the user chose (RecordingMode.room_kept) goes on when a call ends.
+            # A room the user chose (RecordingMode.room_kept) goes on when a call ends. A browser that still holds
+            # a call (the user muted: Chrome lets the microphone go, 2026-11-25) has not ended it.
             if (recording and (auto_recording or (manual and manual_call)) and free_since and not MODE.room_kept
-                    and now - free_since >= STOP_AFTER_SECS and now >= stop_retry_at):
+                    and now - free_since >= STOP_AFTER_SECS and now >= stop_retry_at
+                    and not (web_call and in_browser_call(browsers_only=True) is not False)):   # unknown: not stopped
                 publish(recording, False)
                 r = run([MINUTES, "stop"], timeout=60)
                 if r and r.returncode == 0:
@@ -2034,6 +2327,7 @@ def main():
                     stop_retry_at = now + 30
             if not recording:
                 stop_retry_at = 0
+                web_call = False         # a browser held this recording's call: its sign counts (auto stop)
 
             if not recording and foreign:
                 foreign = False
@@ -2091,7 +2385,7 @@ def main():
                     pending_done = None
                 elif now - pending_done[0] > 1800:
                     pending_done = None
-            safely("meeting record", MEETING_RECORD.poll, bool(st.get("processing")))
+            safely("meeting record", MEETING_RECORD.poll, bool(st.get("processing")), recording)
             safely("minutes jobs", MINUTES_JOBS.poll, recording, bool(st.get("processing")))
             safely("record outcomes", RECORD_OUTCOMES.poll, recording, bool(st.get("processing")))
 

@@ -9,6 +9,7 @@ A meeting file is matched to our transcript by its start: the frontmatter `date`
 rec-<epoch> name are the same recording's start, a second or two apart.
 """
 import json
+import os
 import re
 import tomllib
 from datetime import datetime
@@ -157,6 +158,21 @@ def parts(transcript):
         if t != first and first_part(t) == first and t.exists():
             out.append(t)
     return sorted(out, key=lambda p: epoch_of(p) or 0)
+
+
+def saved_stem(meetings, epoch, suffix=".system.wav"):
+    """A stem Minutes saved for the recording that began at `epoch` (a stem keeps its birth time when moved; the call
+    stem can be made a second after the microphone's, which named the recording), or None (not saved yet, or
+    deleted)."""
+    best = None
+    for p in list(Path(meetings).glob("*" + suffix)) + list(Path(meetings).glob(".parts/*" + suffix)):
+        try:
+            off = abs(os.stat(p).st_birthtime - epoch)
+        except (OSError, AttributeError):
+            continue
+        if off < 3 and (best is None or off < best[0]):
+            best = (off, p)
+    return best[1] if best else None
 
 
 def merged_lines(transcripts, label, gap):

@@ -342,6 +342,37 @@ class AppCommands(unittest.TestCase):
         self.sb.run_main(self.ap, loops=2, clock=self.clock)
         self.assertEqual(self.sb.status()["mode"], "call")
 
+    def test_a_recording_started_while_muted_in_a_web_call_is_the_call(self):
+        # 2026-11-25: muted in a Chrome call, no app held the microphone; the recording became a room.
+        self.voiceprint()
+        self.sb.flag("browser-call")
+        self.sb.command("start")
+        self.sb.run_main(self.ap, loops=4, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "call")
+
+    def test_muting_in_a_web_call_does_not_stop_its_recording(self):
+        # 2026-11-25: the user muted in a Chrome call, Chrome let the microphone go, and the recording was stopped
+        # as if the call had ended.
+        self.sb.mic_users("com.google.Chrome.helper")
+        self.sb.flag("browser-call")
+        self.sb.command("start")
+        self.clock.at(3, self.sb.mic_users)                              # muted: Chrome lets the microphone go
+        muted = []
+        self.clock.at(16, lambda: muted.append([a for n, a in self.sb.calls("minutes") if a[0] == "stop"]))
+        self.clock.at(17, lambda: self.sb.flag("browser-call", False))   # the call ends
+        self.sb.run_main(self.ap, loops=30, clock=self.clock)
+        self.assertEqual(muted, [[]])                                    # not stopped while muted
+        self.assertEqual(len([a for n, a in self.sb.calls("minutes") if a[0] == "stop"]), 1)   # stopped at the end
+
+    def test_a_zoom_call_ends_its_recording_whatever_a_browser_holds(self):
+        # The web-call sign keeps only a call in a browser going: an open WebRTC tab must not keep a Zoom recording.
+        self.sb.mic_users("us.zoom.xos")
+        self.sb.flag("browser-call")
+        self.sb.command("start")
+        self.clock.at(3, self.sb.mic_users)                              # the Zoom call ends
+        self.sb.run_main(self.ap, loops=16, clock=self.clock)
+        self.assertEqual(len([a for n, a in self.sb.calls("minutes") if a[0] == "stop"]), 1)
+
     def test_no_mode_when_not_recording(self):
         self.sb.run_main(self.ap, loops=2, clock=self.clock)
         self.assertEqual(self.sb.status()["mode"], "")
@@ -440,10 +471,28 @@ class CallAudioLost(unittest.TestCase):
     def minutes(self, cmd):
         return [a for n, a in self.sb.calls("minutes") if a and a[0] == cmd]
 
+    def talk(self):
+        """The user says something (a line of the live transcript, now)."""
+        path = self.ap.LIVE_ASR.path
+        if path:
+            ts = __import__("datetime").datetime.fromtimestamp(self.clock.time()).isoformat(timespec="seconds")
+            with open(path, "a") as f:
+                f.write(json.dumps({"ts": ts, "speaker": "我", "track": "voice", "text": "大家聽得到嗎"},
+                                   ensure_ascii=False) + "\n")
+
+    def overload(self):
+        """Minutes warns of audio input overload, now."""
+        log = self.sb.home / ".minutes" / "logs" / "minutes.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        at = __import__("datetime").datetime.fromtimestamp(self.clock.time()).astimezone().isoformat()
+        with open(log, "a") as f:
+            f.write('{"level":"warn","message":"audio input overload: possible audio gaps","ts":"%s"}\n' % at)
+
     def lost_notices(self):
         return [n for n in self.sb.notifications() if "錄不到通話聲音" in n[0]]
 
     def test_restarted_once_then_the_user_is_told(self):
+        self.ap.CALL_AUDIO_RESTARTS = 1                                    # one restart allowed here
         self.sb.mic_users("com.google.Chrome.helper")
         self.sb.run_main(self.ap, loops=3, clock=self.clock)              # the call is recorded
         self.assertEqual(len(self.minutes("record")), 1)
@@ -485,6 +534,52 @@ class CallAudioLost(unittest.TestCase):
         self.sb.run_main(self.ap, loops=4, clock=self.clock)
         self.assertFalse(self.sb.status()["recording"])
         self.assertEqual(self.sb.status()["problems"], [])
+
+    def test_a_call_lost_for_good_keeps_the_others_on_the_microphone_until_it_is_back(self):
+        # G-10: no restart left, the call's audio still lost: room mode for now (the microphone keeps the others
+        # it hears from the speakers), and call mode again once the call's audio returns.
+        self.ap.CALL_AUDIO_RESTARTS = 0
+        vp = self.sb.home / ".config" / "meeting-copilot" / "voiceprint.json"
+        vp.parent.mkdir(parents=True, exist_ok=True)
+        vp.write_text("{}")                                              # room mode tells the user apart
+        self.sb.mic_users("com.google.Chrome.helper")
+        self.sb.run_main(self.ap, loops=3, clock=self.clock)
+        self.assertEqual(self.sb.status()["mode"], "call")
+        self.add(30, sound=True)
+        self.add(130, sound=False)
+        for at in (12, 22, 32, 42):
+            self.clock.at(at, lambda: self.add(10, sound=True))          # the call's audio comes back, and stays
+        modes = []
+        self.clock.at(11, lambda: modes.append(self.sb.status()["mode"]))
+        self.sb.run_main(self.ap, loops=12, clock=self.clock)
+        self.assertEqual(modes, ["room"])                                # while lost: room mode for now
+        self.assertIn("現場模式", self.lost_notices()[-1][1])
+        self.assertEqual(self.sb.status()["mode"], "call")                # back to call mode
+        self.assertTrue([n for n in self.sb.notifications() if "通話聲音回來了" in n[0]])
+        self.assertEqual(self.minutes("stop"), [])
+
+    def test_a_call_never_heard_is_restarted_and_tried_again_later(self):
+        # 2026-11-25: the call's audio never reached Minutes, while the user talked; then a restart that does not
+        # help is tried again, after a longer wait.
+        self.sb.mic_users("com.google.Chrome.helper")
+        self.sb.run_main(self.ap, loops=3, clock=self.clock)
+        self.talk()
+        self.overload()
+        self.add(130, sound=False)
+        self.sb.run_main(self.ap, loops=4, clock=self.clock)
+        self.assertEqual(len(self.minutes("stop")), 1)                     # restarted, never heard
+        self.assertEqual(len(self.minutes("record")), 2)
+        time.sleep(1.1)
+        self.add(130, sound=False)                                         # still nothing
+        self.sb.run_main(self.ap, loops=6, clock=self.clock)
+        self.talk()
+        self.assertEqual(len(self.minutes("stop")), 1)                     # not yet: the wait grows
+        self.add(130, sound=False)
+        self.clock.at(60, self.talk)
+        self.clock.at(60, self.overload)
+        self.sb.run_main(self.ap, loops=30, clock=self.clock)
+        self.assertEqual(len(self.minutes("stop")), 2)                     # tried again later
+        self.assertTrue(self.sb.status()["recording"])
 
     def test_silence_after_the_call_ends_restarts_nothing(self):
         # Once the call has ended, its silence must not be taken for lost audio (no restart).

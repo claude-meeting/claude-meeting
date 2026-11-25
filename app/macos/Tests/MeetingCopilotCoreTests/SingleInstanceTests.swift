@@ -3,6 +3,21 @@ import XCTest
 
 /// One copy of the app at a time, the newest one.
 final class SingleInstanceTests: XCTestCase {
+    func testAnAppReplacedOnDiskSinceItStartedIsOld() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertTrue(SingleInstance.replaced(executableChanged: start.addingTimeInterval(60), launched: start))
+        XCTAssertFalse(SingleInstance.replaced(executableChanged: start.addingTimeInterval(-60), launched: start))
+        XCTAssertFalse(SingleInstance.replaced(executableChanged: nil, launched: start))
+        // Copied from a disk image: the file keeps the build's date, the installed version is not the one running.
+        XCTAssertTrue(SingleInstance.replaced(executableChanged: start.addingTimeInterval(-86_400), launched: start,
+                                              running: "0.1.20 (20)", installed: "0.1.21 (21)"))
+        XCTAssertFalse(SingleInstance.replaced(executableChanged: start.addingTimeInterval(-60), launched: start,
+                                               running: "0.1.21 (21)", installed: "0.1.21 (21)"))
+        XCTAssertEqual(SingleInstance.version(["CFBundleShortVersionString": "0.1.21", "CFBundleVersion": "21"]),
+                       "0.1.21 (21)")
+        XCTAssertNil(SingleInstance.version(nil))
+    }
+
     private func copies(_ versions: String?...) -> [SingleInstance.Copy] { versions.map { .init(version: $0) } }
 
     func testAloneRuns() {

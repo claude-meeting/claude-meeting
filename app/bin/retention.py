@@ -10,7 +10,8 @@ rule can be undone. Transcripts are archived instead of trashed.
   voiceprints_days  ~/meetings/.*.embeddings
   screenshots_days  app/state/screens/*, ~/.minutes/screens/*
   video_days        app/state/video/*
-  live_notes_days   ~/meetings/live/*.md, app/state/live/*.jsonl, app/state/session-*.json
+  live_notes_days   ~/meetings/live/*.md, app/state/live/*.jsonl (and *.bak copies), app/state/session-*.json,
+                    app/state/backups/*
 
 Usage: retention.py [--dry-run]
 """
@@ -60,6 +61,8 @@ def main(dry_run=False):
     expire((state / "live").glob("*.jsonl"), r.get("live_notes_days"), "live transcript")
     expire((state / "live").glob("*.json"), r.get("live_notes_days"), "live speakers")   # voiceprints of the meeting
     expire((state / "live").glob("*.mode"), r.get("live_notes_days"), "live mode")
+    expire((state / "live").glob("*.bak"), r.get("live_notes_days"), "live transcript copy")   # fill_call_gaps
+    expire((state / "backups").glob("*"), r.get("live_notes_days"), "meeting file copy")
     expire(state.glob("session-*.json"), r.get("live_notes_days"), "session state")
 
     for action, label, p in actions:

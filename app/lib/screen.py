@@ -3,8 +3,10 @@
 Frames come from bin/screen-capture (or, as a fallback, Minutes' own screenshots). For each new one:
 1. Perceptual hash (dHash) against the last kept frame: if the screen barely changed,
    the frame is skipped.
-2. Otherwise OCR it (Apple Vision, zh-Hant + en) and diff its lines against the last
-   kept frame:
+2. Of the frames that changed since the last look, only the newest is OCR'd (Apple Vision, zh-Hant + en): the
+   notes read the screen once per analysis, and OCR of every changed frame (about 16 a minute in a video call,
+   2.5 s of CPU each) took more CPU than anything else during meetings (2026-11-25). Its lines are diffed against
+   the last OCR'd frame:
    - mostly the same lines -> scrolling or a small update: only the new lines are passed on
    - mostly different      -> a new slide / page: the whole text is passed on
    Lines that never change (meeting-app buttons, names) cancel out in the diff.
@@ -41,6 +43,7 @@ class ScreenWatcher:
         self.seen = set()            # paths already processed
         self.last_hash = None
         self.last_lines = []
+        self.unread = None           # the newest changed frame not read yet (overload, ocr off): read when it can
 
     def ocr(self, path):
         try:
@@ -49,19 +52,28 @@ class ScreenWatcher:
             return []                     # missing helper or a slow frame: this frame has no text
         return [l.strip() for l in r.stdout.splitlines() if l.strip()] if r.returncode == 0 else []
 
-    def process(self, path):
-        """Returns None or {"kind": "new_page"|"update", "text": str, "path": str}."""
+    def changed(self, path):
+        """Whether this unseen frame differs from the last kept one (it becomes the last kept one)."""
         path = Path(path)
         if path in self.seen:
-            return None
+            return False
         try:
             h = dhash(path)
         except OSError:
-            return None                       # still being written; caller retries later
+            return False                      # still being written; caller retries later
         self.seen.add(path)
         if self.last_hash is not None and hamming(h, self.last_hash) <= HASH_DISTANCE_SAME:
-            return None
+            return False
         self.last_hash = h
+        return True
+
+    def process(self, path):
+        """Returns None or {"kind": "new_page"|"update", "text": str, "path": str}."""
+        return self.read(path) if self.changed(path) else None
+
+    def read(self, path):
+        """OCR a changed frame and diff it against the last one read: an event, or None when it adds nothing."""
+        path = Path(path)
         lines = self.ocr(path)
         prev = set(self.last_lines)
         overlap = sum(l in prev for l in lines) / len(lines) if lines else 1.0
@@ -73,8 +85,10 @@ class ScreenWatcher:
             return {"kind": "update", "text": "\n".join(new), "path": str(path)}
         return {"kind": "new_page", "text": "\n".join(lines), "path": str(path)}
 
-    def poll(self, root, newer_than=0.0):
-        """Process unseen screenshots under root (oldest first). Returns the events."""
+    def poll(self, root, newer_than=0.0, ocr=True):
+        """Unseen screenshots under root, oldest first: an event for each frame that changed, {"kind": "frame",
+        "text": "", "path"}, except the newest, which is read (new page or update) when `ocr` is on. A frame left
+        unread through an overload is read on the next poll with no frame newer."""
         files = []
         for p in Path(root).rglob("*"):
             if p.suffix.lower() not in (".png", ".jpg", ".jpeg") or p in self.seen:
@@ -85,4 +99,15 @@ class ScreenWatcher:
                 continue                  # deleted while we were listing
             if mtime >= newer_than and time.time() - mtime > 0.5:
                 files.append((mtime, p))
-        return [e for e in (self.process(p) for _, p in sorted(files)) if e]
+        changed = [p for _, p in sorted(files) if self.changed(p)]
+        events = [{"kind": "frame", "text": "", "path": str(p)} for p in changed]
+        if not ocr:
+            self.unread = changed[-1] if changed else self.unread
+            return events
+        if changed:
+            self.unread = None
+            events[-1] = self.read(changed[-1]) or events[-1]
+        elif self.unread is not None and Path(self.unread).exists():
+            read, self.unread = self.read(self.unread), None   # the screen as it stayed through an overload
+            events = [read] if read else []
+        return events
